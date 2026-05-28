@@ -22,8 +22,8 @@ services:
       MINIO_ROOT_USER: kladd
       MINIO_ROOT_PASSWORD: kladd_local_password
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9100:9000"
+      - "9101:9001"
     volumes:
       - minio_data:/data
 
