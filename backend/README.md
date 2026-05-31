@@ -8,13 +8,14 @@ Go API scaffold for Kladd.
 - environment-based config
 - health endpoint at `GET /healthz`
 - user registration endpoint at `POST /api/users`
+- user login endpoint at `POST /api/auth/login`
 - Security PIN setup endpoint at `POST /api/account/security-pin`
 - initial PostgreSQL migration for `users` and `audit_logs`
 - PostgreSQL connection package
 - migration runner command
 - Security PIN validation, hashing, comparison, and lockout helpers
 
-No login session, claim, consent, evidence, identity anchor, Security PIN reset, or truth release logic is implemented in this module.
+No claim, consent, evidence, identity anchor, Security PIN reset, refresh token, or truth release logic is implemented in this module.
 
 ## User Registration
 
@@ -32,24 +33,37 @@ No login session, claim, consent, evidence, identity anchor, Security PIN reset,
 
 Passwords are hashed before storage. Responses do not include passwords or password hashes.
 
-## Security PIN Setup
+## Login
 
-`POST /api/account/security-pin` stores a hashed Security PIN for an existing user.
+`POST /api/auth/login` verifies email and password, records a login audit event, and returns a short-lived JWT access token.
 
 ```json
 {
-  "user_id": "4cba7fd4-1f79-4fa8-9c92-95c32ab627f8",
+  "email": "ada@example.com",
+  "password": "strong-password"
+}
+```
+
+Login responses include only safe user fields and token metadata.
+
+## Security PIN Setup
+
+`POST /api/account/security-pin` stores a hashed Security PIN for the authenticated user.
+
+```json
+{
   "security_pin": "4829"
 }
 ```
 
-Security PINs must be 4-6 digits. Responses do not include the PIN or PIN hash.
+Security PINs must be 4-6 digits. Requests require `Authorization: Bearer <access_token>`. Responses do not include the PIN or PIN hash.
 
 ## Environment
 
 ```powershell
 $env:KLADD_HTTP_ADDR = ":8080"
 $env:KLADD_DATABASE_URL = "postgres://kladd:kladd_local_password@localhost:5432/kladd?sslmode=disable"
+$env:KLADD_JWT_SECRET = "local-dev-change-me"
 ```
 
 See `.env.example` for the local defaults.

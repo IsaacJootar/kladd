@@ -6,6 +6,7 @@
 
 ## Account Endpoints
 - POST /api/users
+- POST /api/auth/login
 - POST /api/account/security-pin
 - POST /api/account/security-pin/reset
 
@@ -31,15 +32,24 @@
 
 Create user responses must not include passwords, password hashes, raw documents, or sensitive identity anchors.
 
+## Login Request Body
+```json
+{
+  "email": "ada@example.com",
+  "password": "strong-password"
+}
+```
+
+Login responses return a short-lived JWT access token and safe user fields only. They must not include passwords, password hashes, raw documents, or sensitive identity anchors.
+
 ## Set Security PIN Request Body
 ```json
 {
-  "user_id": "4cba7fd4-1f79-4fa8-9c92-95c32ab627f8",
   "security_pin": "4829"
 }
 ```
 
-Security PIN responses must not include the PIN or PIN hash.
+Security PIN setup requires `Authorization: Bearer <access_token>`. Responses must not include the PIN or PIN hash.
 
 ## Approve Request Body
 ```json

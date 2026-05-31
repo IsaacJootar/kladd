@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
+	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
@@ -20,11 +22,17 @@ type SecurityPINSetter interface {
 	Setup(ctx context.Context, input securitypin.SetupInput) (securitypin.SetupResult, error)
 }
 
-func NewRouter(cfg config.Config, userCreator UserCreator, pinSetter SecurityPINSetter) http.Handler {
+type Authenticator interface {
+	Login(ctx context.Context, input auth.LoginInput) (auth.LoginResult, error)
+	Authenticate(tokenString string) (uuid.UUID, error)
+}
+
+func NewRouter(cfg config.Config, userCreator UserCreator, pinSetter SecurityPINSetter, authenticator Authenticator) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
-	mux.HandleFunc("/api/account/security-pin", setupSecurityPINHandler(pinSetter))
+	mux.HandleFunc("/api/auth/login", loginHandler(authenticator))
+	mux.HandleFunc("/api/account/security-pin", setupSecurityPINHandler(pinSetter, authenticator))
 
 	return mux
 }
@@ -86,10 +94,48 @@ type createUserRequest struct {
 	AccountType string `json:"account_type"`
 }
 
-func setupSecurityPINHandler(pinSetter SecurityPINSetter) http.HandlerFunc {
+func loginHandler(authenticator Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var request loginRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			return
+		}
+
+		result, err := authenticator.Login(r.Context(), auth.LoginInput{
+			Email:    request.Email,
+			Password: request.Password,
+		})
+		if err != nil {
+			writeLoginError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+type loginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func setupSecurityPINHandler(pinSetter SecurityPINSetter, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, ok := authenticateRequest(w, r, authenticator)
+		if !ok {
 			return
 		}
 
@@ -98,12 +144,6 @@ func setupSecurityPINHandler(pinSetter SecurityPINSetter) http.HandlerFunc {
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
-			return
-		}
-
-		userID, err := uuid.Parse(request.UserID)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_user_id", "A valid user_id is required.")
 			return
 		}
 
@@ -121,7 +161,6 @@ func setupSecurityPINHandler(pinSetter SecurityPINSetter) http.HandlerFunc {
 }
 
 type setupSecurityPINRequest struct {
-	UserID      string `json:"user_id"`
 	SecurityPIN string `json:"security_pin"`
 }
 
@@ -142,6 +181,15 @@ func writeCreateUserError(w http.ResponseWriter, err error) {
 	}
 }
 
+func writeLoginError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Email or password is incorrect.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to log in.")
+	}
+}
+
 func writeSetupSecurityPINError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, securitypin.ErrInvalidFormat):
@@ -151,6 +199,32 @@ func writeSetupSecurityPINError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to set Security PIN.")
 	}
+}
+
+func authenticateRequest(w http.ResponseWriter, r *http.Request, authenticator Authenticator) (uuid.UUID, bool) {
+	tokenString, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
+		return uuid.Nil, false
+	}
+
+	userID, err := authenticator.Authenticate(tokenString)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_token", "Bearer access token is invalid or expired.")
+		return uuid.Nil, false
+	}
+
+	return userID, true
+}
+
+func bearerToken(header string) (string, bool) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+
+	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	return token, token != ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

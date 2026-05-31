@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/database"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
@@ -30,10 +31,12 @@ func main() {
 	userService := users.NewService(userStore)
 	pinStore := securitypin.NewPostgresStore(db)
 	pinService := securitypin.NewSetupService(pinStore)
+	authStore := auth.NewPostgresStore(db)
+	authService := auth.NewService(authStore, auth.NewTokenManager(cfg.JWTSecret, auth.DefaultTokenTTL))
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService, pinService),
+		Handler:           server.NewRouter(cfg, userService, pinService, authService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
