@@ -8,12 +8,13 @@ Go API scaffold for Kladd.
 - environment-based config
 - health endpoint at `GET /healthz`
 - user registration endpoint at `POST /api/users`
+- Security PIN setup endpoint at `POST /api/account/security-pin`
 - initial PostgreSQL migration for `users` and `audit_logs`
 - PostgreSQL connection package
 - migration runner command
 - Security PIN validation, hashing, comparison, and lockout helpers
 
-No login session, claim, consent, evidence, identity anchor, or truth release logic is implemented in this module.
+No login session, claim, consent, evidence, identity anchor, Security PIN reset, or truth release logic is implemented in this module.
 
 ## User Registration
 
@@ -30,6 +31,19 @@ No login session, claim, consent, evidence, identity anchor, or truth release lo
 ```
 
 Passwords are hashed before storage. Responses do not include passwords or password hashes.
+
+## Security PIN Setup
+
+`POST /api/account/security-pin` stores a hashed Security PIN for an existing user.
+
+```json
+{
+  "user_id": "4cba7fd4-1f79-4fa8-9c92-95c32ab627f8",
+  "security_pin": "4829"
+}
+```
+
+Security PINs must be 4-6 digits. Responses do not include the PIN or PIN hash.
 
 ## Environment
 

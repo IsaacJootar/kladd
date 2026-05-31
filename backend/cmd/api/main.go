@@ -10,6 +10,7 @@ import (
 
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/database"
+	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/server"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
 )
@@ -27,10 +28,12 @@ func main() {
 
 	userStore := users.NewPostgresStore(db)
 	userService := users.NewService(userStore)
+	pinStore := securitypin.NewPostgresStore(db)
+	pinService := securitypin.NewSetupService(pinStore)
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService),
+		Handler:           server.NewRouter(cfg, userService, pinService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -31,6 +31,16 @@
 
 Create user responses must not include passwords, password hashes, raw documents, or sensitive identity anchors.
 
+## Set Security PIN Request Body
+```json
+{
+  "user_id": "4cba7fd4-1f79-4fa8-9c92-95c32ab627f8",
+  "security_pin": "4829"
+}
+```
+
+Security PIN responses must not include the PIN or PIN hash.
+
 ## Approve Request Body
 ```json
 {
