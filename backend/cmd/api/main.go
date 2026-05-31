@@ -11,6 +11,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/database"
+	"github.com/IsaacJootar/kladd/backend/internal/evidence"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/server"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
@@ -33,10 +34,13 @@ func main() {
 	pinService := securitypin.NewSetupService(pinStore)
 	authStore := auth.NewPostgresStore(db)
 	authService := auth.NewService(authStore, auth.NewTokenManager(cfg.JWTSecret, auth.DefaultTokenTTL))
+	evidenceStore := evidence.NewPostgresStore(db)
+	evidenceStorage := evidence.NewLocalStorage(cfg.StorageDir)
+	evidenceService := evidence.NewService(evidenceStore, evidenceStorage)
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService, userService, pinService, authService),
+		Handler:           server.NewRouter(cfg, userService, userService, pinService, authService, evidenceService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -27,6 +27,21 @@ type PinResponse = {
   security_pin_set_at: string;
 };
 
+type EvidenceItem = {
+  id: string;
+  category: string;
+  display_name: string;
+  file_name: string;
+  content_type: string;
+  size_bytes: number;
+  status: string;
+  uploaded_at: string;
+};
+
+type EvidenceListResponse = {
+  items: EvidenceItem[];
+};
+
 const navItems = ["Home", "My Records", "Requests", "Proofs", "Security"];
 
 const emptyRegisterForm = {
@@ -42,6 +57,12 @@ const emptyLoginForm = {
   password: "",
 };
 
+const emptyEvidenceForm = {
+  category: "passport",
+  displayName: "",
+  file: null as File | null,
+};
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("register");
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
@@ -55,6 +76,8 @@ export default function Home() {
   );
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [pinState, setPinState] = useState<PinResponse | null>(null);
+  const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
+  const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -70,11 +93,12 @@ export default function Home() {
       { label: "Pending Requests", value: "0" },
       { label: "Active Proofs", value: "0" },
       {
-        label: "Security PIN",
-        value: pinState?.security_pin_set ? "Set" : "Not set",
+        label: "My Evidence",
+        value: String(evidenceItems.length),
       },
+      { label: "Security PIN", value: pinState?.security_pin_set ? "Set" : "Not set" },
     ],
-    [currentUser?.verification_status, pinState?.security_pin_set],
+    [currentUser?.verification_status, evidenceItems.length, pinState?.security_pin_set],
   );
 
   useEffect(() => {
@@ -83,13 +107,17 @@ export default function Home() {
     }
 
     let ignore = false;
-    apiRequest<User>("/account/me", {
-      method: "GET",
-      token,
-    })
-      .then((user) => {
+    Promise.all([
+      apiRequest<User>("/account/me", {
+        method: "GET",
+        token,
+      }),
+      loadEvidenceItems(token),
+    ])
+      .then(([user, items]) => {
         if (!ignore) {
           setCurrentUser(user);
+          setEvidenceItems(items);
         }
       })
       .catch(() => {
@@ -99,6 +127,7 @@ export default function Home() {
           setTokenExpiry("");
           setCurrentUser(null);
           setPinState(null);
+          setEvidenceItems([]);
         }
       });
 
@@ -173,6 +202,41 @@ export default function Home() {
     }
   }
 
+  async function handleEvidenceUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) {
+      setError("Please sign in before adding evidence.");
+      return;
+    }
+
+    if (!evidenceForm.file) {
+      setError("Choose an evidence file first.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const formData = new FormData();
+      formData.set("category", evidenceForm.category);
+      formData.set("display_name", evidenceForm.displayName);
+      formData.set("file", evidenceForm.file);
+
+      const item = await apiMultipartRequest<EvidenceItem>("/evidence-items", {
+        token,
+        body: formData,
+      });
+      setEvidenceItems((items) => [item, ...items]);
+      setEvidenceForm(emptyEvidenceForm);
+      setNotice("Evidence record added.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function loginWith(email: string, password: string) {
     const login = await apiRequest<LoginResponse>("/auth/login", {
       method: "POST",
@@ -190,6 +254,8 @@ export default function Home() {
     setTokenExpiry("");
     setCurrentUser(null);
     setPinState(null);
+    setEvidenceItems([]);
+    setEvidenceForm(emptyEvidenceForm);
     clearAuthStorage();
     setNotice("Signed out.");
     setError("");
@@ -273,37 +339,67 @@ export default function Home() {
             </section>
 
             {signedIn && currentUser ? (
-              <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-500">
-                      Current account
-                    </p>
-                    <h2 className="mt-1 text-xl font-semibold tracking-normal">
-                      {currentUser.name}
-                    </h2>
+              <>
+                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-500">
+                        Current account
+                      </p>
+                      <h2 className="mt-1 text-xl font-semibold tracking-normal">
+                        {currentUser.name}
+                      </h2>
+                    </div>
+                    <span className="w-fit rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold capitalize text-emerald-800">
+                      {currentUser.verification_status}
+                    </span>
                   </div>
-                  <span className="w-fit rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold capitalize text-emerald-800">
-                    {currentUser.verification_status}
-                  </span>
-                </div>
 
-                <dl className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <ProfileField label="Email" value={currentUser.email} />
-                  <ProfileField
-                    label="Phone"
-                    value={currentUser.phone || "Not added"}
-                  />
-                  <ProfileField
-                    label="Account type"
-                    value={currentUser.account_type}
-                  />
-                  <ProfileField
-                    label="Token expires"
-                    value={formatDateTime(tokenExpiry)}
-                  />
-                </dl>
-              </section>
+                  <dl className="mt-5 grid gap-3 sm:grid-cols-2">
+                    <ProfileField label="Email" value={currentUser.email} />
+                    <ProfileField
+                      label="Phone"
+                      value={currentUser.phone || "Not added"}
+                    />
+                    <ProfileField
+                      label="Account type"
+                      value={currentUser.account_type}
+                    />
+                    <ProfileField
+                      label="Token expires"
+                      value={formatDateTime(tokenExpiry)}
+                    />
+                  </dl>
+                </section>
+
+                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-500">
+                        My Records
+                      </p>
+                      <h2 className="mt-1 text-xl font-semibold tracking-normal">
+                        Evidence vault
+                      </h2>
+                    </div>
+                    <span className="w-fit rounded-md bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-800">
+                      {evidenceItems.length} records
+                    </span>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 md:grid-cols-2">
+                    {evidenceItems.length > 0 ? (
+                      evidenceItems.map((item) => (
+                        <EvidenceCard key={item.id} item={item} />
+                      ))
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500 md:col-span-2">
+                        No records yet.
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </>
             ) : null}
           </div>
 
@@ -441,6 +537,77 @@ export default function Home() {
               </form>
             </section>
 
+            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+              <div>
+                <p className="text-sm font-semibold text-slate-500">
+                  My Records
+                </p>
+                <h2 className="mt-1 text-lg font-semibold tracking-normal">
+                  Add evidence
+                </h2>
+              </div>
+
+              <form className="mt-5 space-y-4" onSubmit={handleEvidenceUpload}>
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">
+                    Category
+                  </span>
+                  <select
+                    value={evidenceForm.category}
+                    onChange={(event) =>
+                      setEvidenceForm((form) => ({
+                        ...form,
+                        category: event.target.value,
+                      }))
+                    }
+                    disabled={!signedIn}
+                    className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                  >
+                    <option value="passport">Passport</option>
+                    <option value="degree_certificate">Degree certificate</option>
+                    <option value="business_registration">Business registration</option>
+                    <option value="utility_bill">Utility bill</option>
+                    <option value="license">License</option>
+                    <option value="tax_document">Tax document</option>
+                  </select>
+                </label>
+
+                <TextInput
+                  label="Display name"
+                  value={evidenceForm.displayName}
+                  onChange={(value) =>
+                    setEvidenceForm((form) => ({
+                      ...form,
+                      displayName: value,
+                    }))
+                  }
+                  disabled={!signedIn}
+                />
+
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">
+                    File
+                  </span>
+                  <input
+                    type="file"
+                    onChange={(event) =>
+                      setEvidenceForm((form) => ({
+                        ...form,
+                        file: event.target.files?.[0] ?? null,
+                      }))
+                    }
+                    disabled={!signedIn}
+                    required
+                    className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 outline-none transition file:mr-3 file:rounded-md file:border-0 file:bg-indigo-50 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-indigo-800 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                  />
+                </label>
+
+                <SubmitButton disabled={!signedIn || isSubmitting}>
+                  Add evidence
+                </SubmitButton>
+              </form>
+            </section>
+
             {(notice || error) && (
               <section
                 className={`rounded-lg border p-4 text-sm leading-6 shadow-sm ${
@@ -467,6 +634,47 @@ function ProfileField({ label, value }: { label: string; value: string }) {
         {value}
       </dd>
     </div>
+  );
+}
+
+function EvidenceCard({ item }: { item: EvidenceItem }) {
+  return (
+    <article className="min-h-40 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold capitalize text-slate-950">
+            {item.display_name}
+          </p>
+          <p className="mt-1 text-sm text-slate-500">
+            {formatCategory(item.category)}
+          </p>
+        </div>
+        <span className="rounded-md bg-amber-50 px-2.5 py-1 text-xs font-semibold capitalize text-amber-800">
+          {formatCategory(item.status)}
+        </span>
+      </div>
+
+      <dl className="mt-5 space-y-2 text-sm">
+        <div className="flex justify-between gap-3">
+          <dt className="text-slate-500">File</dt>
+          <dd className="break-all text-right font-medium text-slate-800">
+            {item.file_name}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-slate-500">Size</dt>
+          <dd className="font-medium text-slate-800">
+            {formatBytes(item.size_bytes)}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-slate-500">Uploaded</dt>
+          <dd className="font-medium text-slate-800">
+            {formatDateTime(item.uploaded_at)}
+          </dd>
+        </div>
+      </dl>
+    </article>
   );
 }
 
@@ -577,6 +785,42 @@ async function apiRequest<T>(
   return payload as T;
 }
 
+async function apiMultipartRequest<T>(
+  path: string,
+  options: {
+    body: FormData;
+    token?: string;
+  },
+): Promise<T> {
+  const headers = new Headers();
+  if (options.token) {
+    headers.set("authorization", `Bearer ${options.token}`);
+  }
+
+  const response = await fetch(`/api/kladd${path}`, {
+    method: "POST",
+    headers,
+    body: options.body,
+  });
+
+  const text = await response.text();
+  const payload = parseJSON(text);
+  if (!response.ok) {
+    throw new Error(payload?.message ?? "Request failed.");
+  }
+
+  return payload as T;
+}
+
+async function loadEvidenceItems(accessToken: string) {
+  const response = await apiRequest<EvidenceListResponse>("/evidence-items", {
+    method: "GET",
+    token: accessToken,
+  });
+
+  return response.items;
+}
+
 function parseJSON(text: string) {
   if (!text) {
     return null;
@@ -606,4 +850,24 @@ function formatDateTime(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+
+  if (value < 1024) {
+    return `${value} B`;
+  }
+
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatCategory(value: string) {
+  return value.replaceAll("_", " ");
 }

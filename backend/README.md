@@ -11,12 +11,13 @@ Go API scaffold for Kladd.
 - user login endpoint at `POST /api/auth/login`
 - current account endpoint at `GET /api/account/me`
 - Security PIN setup endpoint at `POST /api/account/security-pin`
-- initial PostgreSQL migration for `users` and `audit_logs`
+- evidence metadata endpoints at `GET /api/evidence-items` and `POST /api/evidence-items`
+- PostgreSQL migrations for `users`, `audit_logs`, and `evidence_items`
 - PostgreSQL connection package
 - migration runner command
 - Security PIN validation, hashing, comparison, and lockout helpers
 
-No claim, consent, evidence, identity anchor, Security PIN reset, refresh token, or truth release logic is implemented in this module.
+No claim, consent approval, identity anchor, Security PIN reset, refresh token, evidence download, or truth release logic is implemented in this module.
 
 ## User Registration
 
@@ -65,12 +66,25 @@ Requests require `Authorization: Bearer <access_token>`. Responses do not includ
 
 Security PINs must be 4-6 digits. Requests require `Authorization: Bearer <access_token>`. Responses do not include the PIN or PIN hash.
 
+## Evidence Items
+
+`GET /api/evidence-items` returns metadata-only records for the authenticated user.
+
+`POST /api/evidence-items` accepts `multipart/form-data`:
+
+- `category`
+- `display_name`
+- `file`
+
+Files are stored with local storage for the MVP. API responses do not include internal file paths, download URLs, raw document contents, sensitive identity anchors, Security PIN values, or hashes.
+
 ## Environment
 
 ```powershell
 $env:KLADD_HTTP_ADDR = ":8080"
 $env:KLADD_DATABASE_URL = "postgres://kladd:kladd_local_password@localhost:5432/kladd?sslmode=disable"
 $env:KLADD_JWT_SECRET = "local-dev-change-me"
+$env:KLADD_STORAGE_DIR = "storage"
 ```
 
 See `.env.example` for the local defaults.
@@ -92,12 +106,13 @@ go run ./cmd/api
 
 Initial SQL migrations live in `migrations/`.
 
-Module 2 adds:
+Current migrations add:
 
 - `users`
 - `audit_logs`
+- `evidence_items`
 
-These migrations do not create evidence, identity anchor, claim, or consent tables yet.
+These migrations do not create identity anchor, claim, or consent tables yet.
 
 Run migrations from the backend directory after PostgreSQL is available:
 

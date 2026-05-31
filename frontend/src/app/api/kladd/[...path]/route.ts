@@ -34,7 +34,7 @@ async function proxyRequest(request: NextRequest, context: RouteContext) {
   const response = await fetch(targetURL, {
     method: request.method,
     headers,
-    body: hasBody ? await request.text() : undefined,
+    body: hasBody ? await request.arrayBuffer() : undefined,
     cache: "no-store",
   });
 

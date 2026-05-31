@@ -11,6 +11,10 @@
 - POST /api/account/security-pin
 - POST /api/account/security-pin/reset
 
+## Evidence Endpoints
+- GET /api/evidence-items
+- POST /api/evidence-items
+
 ## Core Endpoints
 - POST /api/claim-requests
 - GET /api/claim-requests/{id}
@@ -58,6 +62,20 @@ Current account responses return safe user fields only. They must not include pa
 ```
 
 Security PIN setup requires `Authorization: Bearer <access_token>`. Responses must not include the PIN or PIN hash.
+
+## Create Evidence Item Request
+POST /api/evidence-items
+
+Requires `Authorization: Bearer <access_token>`.
+
+Request content type: `multipart/form-data`
+
+Fields:
+- `category`
+- `display_name`
+- `file`
+
+Evidence responses return metadata only. They must not include internal `file_path`, download URLs, raw document contents, sensitive identity anchors, Security PIN values, or hashes.
 
 ## Approve Request Body
 ```json

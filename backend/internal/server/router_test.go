@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
+	"github.com/IsaacJootar/kladd/backend/internal/evidence"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
 	"github.com/google/uuid"
@@ -85,7 +87,31 @@ func (authenticator *fakeAuthenticator) Authenticate(tokenString string) (uuid.U
 	return authenticator.userID, nil
 }
 
-func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator) http.Handler {
+type fakeEvidenceManager struct {
+	items  []evidence.EvidenceItem
+	item   evidence.EvidenceItem
+	err    error
+	input  evidence.CreateInput
+	userID uuid.UUID
+}
+
+func (manager *fakeEvidenceManager) Create(ctx context.Context, input evidence.CreateInput) (evidence.EvidenceItem, error) {
+	manager.input = input
+	if manager.err != nil {
+		return evidence.EvidenceItem{}, manager.err
+	}
+	return manager.item, nil
+}
+
+func (manager *fakeEvidenceManager) List(ctx context.Context, userID uuid.UUID) ([]evidence.EvidenceItem, error) {
+	manager.userID = userID
+	if manager.err != nil {
+		return nil, manager.err
+	}
+	return manager.items, nil
+}
+
+func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator, evidenceManagers ...*fakeEvidenceManager) http.Handler {
 	if userCreator == nil {
 		userCreator = &fakeUserCreator{}
 	}
@@ -98,8 +124,12 @@ func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pin
 	if authenticator == nil {
 		authenticator = &fakeAuthenticator{userID: uuid.New()}
 	}
+	evidenceManager := &fakeEvidenceManager{}
+	if len(evidenceManagers) > 0 && evidenceManagers[0] != nil {
+		evidenceManager = evidenceManagers[0]
+	}
 
-	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, authenticator)
+	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, authenticator, evidenceManager)
 }
 
 func TestCreateUserHandlerCreatesUser(t *testing.T) {
@@ -532,4 +562,190 @@ func TestSetupSecurityPINHandlerRequiresPost(t *testing.T) {
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
 	}
+}
+
+func TestEvidenceItemsHandlerListsMetadataOnly(t *testing.T) {
+	userID := uuid.New()
+	manager := &fakeEvidenceManager{
+		items: []evidence.EvidenceItem{
+			{
+				ID:          uuid.New(),
+				Category:    "passport",
+				DisplayName: "Passport",
+				FileName:    "passport.pdf",
+				ContentType: "application/pdf",
+				SizeBytes:   12,
+				Status:      evidence.StatusUploaded,
+				UploadedAt:  time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: userID}, manager)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/evidence-items", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	if manager.userID != userID {
+		t.Fatalf("user id = %s, want %s", manager.userID, userID)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if _, ok := payload["file_path"]; ok {
+		t.Fatal("response exposed file path")
+	}
+
+	if strings.Contains(response.Body.String(), "storage") {
+		t.Fatal("response exposed storage details")
+	}
+}
+
+func TestEvidenceItemsHandlerCreatesEvidenceItem(t *testing.T) {
+	userID := uuid.New()
+	manager := &fakeEvidenceManager{
+		item: evidence.EvidenceItem{
+			ID:          uuid.New(),
+			Category:    "passport",
+			DisplayName: "Passport",
+			FileName:    "passport.pdf",
+			ContentType: "application/pdf",
+			SizeBytes:   12,
+			Status:      evidence.StatusUploaded,
+			UploadedAt:  time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: userID}, manager)
+
+	body, contentType := multipartEvidenceBody(t, map[string]string{
+		"category":     "passport",
+		"display_name": "Passport",
+	}, "passport.pdf", "fake-content")
+	request := httptest.NewRequest(http.MethodPost, "/api/evidence-items", body)
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusCreated, response.Body.String())
+	}
+
+	if manager.input.UserID != userID {
+		t.Fatalf("user id = %s, want %s", manager.input.UserID, userID)
+	}
+
+	if manager.input.Category != "passport" {
+		t.Fatalf("category = %q, want passport", manager.input.Category)
+	}
+
+	if manager.input.DisplayName != "Passport" {
+		t.Fatalf("display name = %q, want Passport", manager.input.DisplayName)
+	}
+
+	if manager.input.FileName != "passport.pdf" {
+		t.Fatalf("file name = %q, want passport.pdf", manager.input.FileName)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if _, ok := payload["file_path"]; ok {
+		t.Fatal("response exposed file path")
+	}
+}
+
+func TestEvidenceItemsHandlerRequiresBearerToken(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/evidence-items", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestEvidenceItemsHandlerMapsCreateErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "invalid category", err: evidence.ErrInvalidCategory, status: http.StatusBadRequest},
+		{name: "invalid file", err: evidence.ErrInvalidFile, status: http.StatusBadRequest},
+		{name: "unknown error", err: errors.New("boom"), status: http.StatusInternalServerError},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()}, &fakeEvidenceManager{err: test.err})
+			body, contentType := multipartEvidenceBody(t, map[string]string{
+				"category": "passport",
+			}, "passport.pdf", "fake-content")
+			request := httptest.NewRequest(http.MethodPost, "/api/evidence-items", body)
+			request.Header.Set("Authorization", "Bearer test-token")
+			request.Header.Set("Content-Type", contentType)
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+		})
+	}
+}
+
+func TestEvidenceItemsHandlerRequiresKnownMethod(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
+	request := httptest.NewRequest(http.MethodDelete, "/api/evidence-items", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func multipartEvidenceBody(t *testing.T, fields map[string]string, fileName string, fileContent string) (*bytes.Buffer, string) {
+	t.Helper()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			t.Fatalf("write field: %v", err)
+		}
+	}
+
+	fileWriter, err := writer.CreateFormFile("file", fileName)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+
+	if _, err := fileWriter.Write([]byte(fileContent)); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	return body, writer.FormDataContentType()
 }
