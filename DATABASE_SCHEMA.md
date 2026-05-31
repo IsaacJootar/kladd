@@ -45,6 +45,9 @@
 - return_type
 - sensitivity
 - validity_days
+- derivation_rule
+- required_evidence_json
+- created_at
 
 ### claim_requests
 - id

@@ -16,6 +16,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
+	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
 	"github.com/google/uuid"
 )
@@ -111,6 +112,20 @@ func (manager *fakeEvidenceManager) List(ctx context.Context, userID uuid.UUID) 
 	return manager.items, nil
 }
 
+type fakeTruthDefinitionLister struct {
+	definitions []truths.Definition
+	err         error
+	called      bool
+}
+
+func (lister *fakeTruthDefinitionLister) ListDefinitions(ctx context.Context) ([]truths.Definition, error) {
+	lister.called = true
+	if lister.err != nil {
+		return nil, lister.err
+	}
+	return lister.definitions, nil
+}
+
 func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator, evidenceManagers ...*fakeEvidenceManager) http.Handler {
 	if userCreator == nil {
 		userCreator = &fakeUserCreator{}
@@ -129,7 +144,7 @@ func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pin
 		evidenceManager = evidenceManagers[0]
 	}
 
-	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, authenticator, evidenceManager)
+	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, authenticator, evidenceManager, &fakeTruthDefinitionLister{})
 }
 
 func TestCreateUserHandlerCreatesUser(t *testing.T) {
@@ -713,6 +728,116 @@ func TestEvidenceItemsHandlerMapsCreateErrors(t *testing.T) {
 func TestEvidenceItemsHandlerRequiresKnownMethod(t *testing.T) {
 	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
 	request := httptest.NewRequest(http.MethodDelete, "/api/evidence-items", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestTruthDefinitionsHandlerListsDefinitionMetadata(t *testing.T) {
+	lister := &fakeTruthDefinitionLister{
+		definitions: []truths.Definition{
+			{
+				ID:               uuid.New(),
+				TruthKey:         "age_over_18",
+				Category:         "age",
+				ReturnType:       "boolean",
+				Sensitivity:      "low",
+				ValidityDays:     365,
+				DerivationRule:   "verified_date_of_birth_evidence",
+				RequiredEvidence: []string{"passport"},
+				CreatedAt:        time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		lister,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/truth-definitions", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	if !lister.called {
+		t.Fatal("expected truth definitions lister to be called")
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{"truth_value", "raw_document", "bvn", "nin", "passport_number", "tax_id"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestTruthDefinitionsHandlerRequiresBearerToken(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+	)
+	request := httptest.NewRequest(http.MethodGet, "/api/truth-definitions", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestTruthDefinitionsHandlerMapsErrors(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{err: errors.New("boom")},
+	)
+	request := httptest.NewRequest(http.MethodGet, "/api/truth-definitions", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestTruthDefinitionsHandlerRequiresGet(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/api/truth-definitions", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	response := httptest.NewRecorder()
 

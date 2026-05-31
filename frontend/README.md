@@ -9,6 +9,7 @@ Next.js frontend for Kladd.
 - current account display
 - Security PIN setup screen
 - evidence record cards and upload form
+- supported truth definitions
 - local API proxy to the Go backend
 
 The frontend does not display passwords, password hashes, Security PIN hashes, raw documents, or sensitive identity anchors.

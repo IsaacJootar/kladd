@@ -15,6 +15,9 @@
 - GET /api/evidence-items
 - POST /api/evidence-items
 
+## Truth Registry Endpoints
+- GET /api/truth-definitions
+
 ## Core Endpoints
 - POST /api/claim-requests
 - GET /api/claim-requests/{id}
@@ -76,6 +79,13 @@ Fields:
 - `file`
 
 Evidence responses return metadata only. They must not include internal `file_path`, download URLs, raw document contents, sensitive identity anchors, Security PIN values, or hashes.
+
+## Truth Definitions
+GET /api/truth-definitions
+
+Requires `Authorization: Bearer <access_token>`.
+
+Truth definition responses return registry metadata only. They must not include derived truth values, raw documents, unrestricted evidence, sensitive identity anchors, Security PIN values, or hashes.
 
 ## Approve Request Body
 ```json

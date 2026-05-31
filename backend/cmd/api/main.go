@@ -14,6 +14,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/server"
+	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
 )
 
@@ -37,10 +38,12 @@ func main() {
 	evidenceStore := evidence.NewPostgresStore(db)
 	evidenceStorage := evidence.NewLocalStorage(cfg.StorageDir)
 	evidenceService := evidence.NewService(evidenceStore, evidenceStorage)
+	truthStore := truths.NewPostgresStore(db)
+	truthService := truths.NewService(truthStore)
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService, userService, pinService, authService, evidenceService),
+		Handler:           server.NewRouter(cfg, userService, userService, pinService, authService, evidenceService, truthService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

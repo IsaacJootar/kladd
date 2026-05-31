@@ -11,6 +11,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
+	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
 	"github.com/google/uuid"
 )
@@ -39,7 +40,11 @@ type EvidenceManager interface {
 	List(ctx context.Context, userID uuid.UUID) ([]evidence.EvidenceItem, error)
 }
 
-func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager) http.Handler {
+type TruthDefinitionLister interface {
+	ListDefinitions(ctx context.Context) ([]truths.Definition, error)
+}
+
+func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
@@ -47,6 +52,7 @@ func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter
 	mux.HandleFunc("/api/account/me", currentAccountHandler(userGetter, authenticator))
 	mux.HandleFunc("/api/account/security-pin", setupSecurityPINHandler(pinSetter, authenticator))
 	mux.HandleFunc("/api/evidence-items", evidenceItemsHandler(evidenceManager, authenticator))
+	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator))
 
 	return mux
 }
@@ -255,6 +261,29 @@ func createEvidenceItem(w http.ResponseWriter, r *http.Request, userID uuid.UUID
 	}
 
 	writeJSON(w, http.StatusCreated, item)
+}
+
+func truthDefinitionsHandler(truthDefinitionLister TruthDefinitionLister, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		if _, ok := authenticateRequest(w, r, authenticator); !ok {
+			return
+		}
+
+		definitions, err := truthDefinitionLister.ListDefinitions(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "server_error", "Unable to load truth definitions.")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string][]truths.Definition{
+			"items": definitions,
+		})
+	}
 }
 
 func writeCreateUserError(w http.ResponseWriter, err error) {

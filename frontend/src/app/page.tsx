@@ -42,6 +42,22 @@ type EvidenceListResponse = {
   items: EvidenceItem[];
 };
 
+type TruthDefinition = {
+  id: string;
+  truth_key: string;
+  category: string;
+  return_type: string;
+  sensitivity: string;
+  validity_days: number;
+  derivation_rule: string;
+  required_evidence: string[];
+  created_at: string;
+};
+
+type TruthDefinitionListResponse = {
+  items: TruthDefinition[];
+};
+
 const navItems = ["Home", "My Records", "Requests", "Proofs", "Security"];
 
 const emptyRegisterForm = {
@@ -77,6 +93,7 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [pinState, setPinState] = useState<PinResponse | null>(null);
   const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
+  const [truthDefinitions, setTruthDefinitions] = useState<TruthDefinition[]>([]);
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -91,14 +108,19 @@ export default function Home() {
         value: currentUser?.verification_status ?? "Not started",
       },
       { label: "Pending Requests", value: "0" },
-      { label: "Active Proofs", value: "0" },
+      { label: "Supported Proofs", value: String(truthDefinitions.length) },
       {
         label: "My Evidence",
         value: String(evidenceItems.length),
       },
       { label: "Security PIN", value: pinState?.security_pin_set ? "Set" : "Not set" },
     ],
-    [currentUser?.verification_status, evidenceItems.length, pinState?.security_pin_set],
+    [
+      currentUser?.verification_status,
+      truthDefinitions.length,
+      evidenceItems.length,
+      pinState?.security_pin_set,
+    ],
   );
 
   useEffect(() => {
@@ -113,11 +135,13 @@ export default function Home() {
         token,
       }),
       loadEvidenceItems(token),
+      loadTruthDefinitions(token),
     ])
-      .then(([user, items]) => {
+      .then(([user, evidence, truths]) => {
         if (!ignore) {
           setCurrentUser(user);
-          setEvidenceItems(items);
+          setEvidenceItems(evidence);
+          setTruthDefinitions(truths);
         }
       })
       .catch(() => {
@@ -128,6 +152,7 @@ export default function Home() {
           setCurrentUser(null);
           setPinState(null);
           setEvidenceItems([]);
+          setTruthDefinitions([]);
         }
       });
 
@@ -255,6 +280,7 @@ export default function Home() {
     setCurrentUser(null);
     setPinState(null);
     setEvidenceItems([]);
+    setTruthDefinitions([]);
     setEvidenceForm(emptyEvidenceForm);
     clearAuthStorage();
     setNotice("Signed out.");
@@ -395,6 +421,37 @@ export default function Home() {
                     ) : (
                       <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500 md:col-span-2">
                         No records yet.
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-500">
+                        Proofs
+                      </p>
+                      <h2 className="mt-1 text-xl font-semibold tracking-normal">
+                        Supported truths
+                      </h2>
+                    </div>
+                    <span className="w-fit rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                      {truthDefinitions.length} definitions
+                    </span>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 md:grid-cols-2">
+                    {truthDefinitions.length > 0 ? (
+                      truthDefinitions.map((definition) => (
+                        <TruthDefinitionCard
+                          key={definition.id}
+                          definition={definition}
+                        />
+                      ))
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500 md:col-span-2">
+                        No truth definitions loaded.
                       </div>
                     )}
                   </div>
@@ -678,6 +735,51 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
   );
 }
 
+function TruthDefinitionCard({
+  definition,
+}: {
+  definition: TruthDefinition;
+}) {
+  return (
+    <article className="min-h-44 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="break-words text-sm font-semibold text-slate-950">
+            {definition.truth_key}
+          </p>
+          <p className="mt-1 text-sm capitalize text-slate-500">
+            {formatCategory(definition.category)}
+          </p>
+        </div>
+        <span className={sensitivityClass(definition.sensitivity)}>
+          {definition.sensitivity}
+        </span>
+      </div>
+
+      <dl className="mt-5 space-y-2 text-sm">
+        <div className="flex justify-between gap-3">
+          <dt className="text-slate-500">Return</dt>
+          <dd className="font-medium capitalize text-slate-800">
+            {formatCategory(definition.return_type)}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-slate-500">Valid for</dt>
+          <dd className="font-medium text-slate-800">
+            {definition.validity_days} days
+          </dd>
+        </div>
+        <div>
+          <dt className="text-slate-500">Evidence</dt>
+          <dd className="mt-1 text-sm font-medium capitalize text-slate-800">
+            {definition.required_evidence.map(formatCategory).join(", ")}
+          </dd>
+        </div>
+      </dl>
+    </article>
+  );
+}
+
 function TextInput({
   label,
   value,
@@ -821,6 +923,18 @@ async function loadEvidenceItems(accessToken: string) {
   return response.items;
 }
 
+async function loadTruthDefinitions(accessToken: string) {
+  const response = await apiRequest<TruthDefinitionListResponse>(
+    "/truth-definitions",
+    {
+      method: "GET",
+      token: accessToken,
+    },
+  );
+
+  return response.items;
+}
+
 function parseJSON(text: string) {
   if (!text) {
     return null;
@@ -870,4 +984,20 @@ function formatBytes(value: number) {
 
 function formatCategory(value: string) {
   return value.replaceAll("_", " ");
+}
+
+function sensitivityClass(value: string) {
+  const base =
+    "rounded-md px-2.5 py-1 text-xs font-semibold capitalize";
+  if (value === "low") {
+    return `${base} bg-emerald-50 text-emerald-800`;
+  }
+  if (value === "medium") {
+    return `${base} bg-amber-50 text-amber-800`;
+  }
+  if (value === "high") {
+    return `${base} bg-red-50 text-red-800`;
+  }
+
+  return `${base} bg-slate-100 text-slate-700`;
 }

@@ -12,12 +12,13 @@ Go API scaffold for Kladd.
 - current account endpoint at `GET /api/account/me`
 - Security PIN setup endpoint at `POST /api/account/security-pin`
 - evidence metadata endpoints at `GET /api/evidence-items` and `POST /api/evidence-items`
-- PostgreSQL migrations for `users`, `audit_logs`, and `evidence_items`
+- truth registry endpoint at `GET /api/truth-definitions`
+- PostgreSQL migrations for `users`, `audit_logs`, `evidence_items`, and `truth_definitions`
 - PostgreSQL connection package
 - migration runner command
 - Security PIN validation, hashing, comparison, and lockout helpers
 
-No claim, consent approval, identity anchor, Security PIN reset, refresh token, evidence download, or truth release logic is implemented in this module.
+No claim, consent approval, identity anchor, Security PIN reset, refresh token, evidence download, truth derivation, or truth release logic is implemented in this module.
 
 ## User Registration
 
@@ -78,6 +79,12 @@ Security PINs must be 4-6 digits. Requests require `Authorization: Bearer <acces
 
 Files are stored with local storage for the MVP. API responses do not include internal file paths, download URLs, raw document contents, sensitive identity anchors, Security PIN values, or hashes.
 
+## Truth Definitions
+
+`GET /api/truth-definitions` returns supported truth registry metadata for authenticated users.
+
+Responses include keys, categories, return types, sensitivity, validity durations, derivation rule names, and required evidence categories. Responses do not include derived truth values, raw documents, sensitive identity anchors, Security PIN values, or hashes.
+
 ## Environment
 
 ```powershell
@@ -111,6 +118,7 @@ Current migrations add:
 - `users`
 - `audit_logs`
 - `evidence_items`
+- `truth_definitions`
 
 These migrations do not create identity anchor, claim, or consent tables yet.
 
