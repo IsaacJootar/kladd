@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -26,6 +27,13 @@ func (store *recordingStore) Create(ctx context.Context, record CreateRecord) (U
 		Phone:              record.Phone,
 		AccountType:        record.AccountType,
 		VerificationStatus: record.VerificationStatus,
+	}
+	return store.user, nil
+}
+
+func (store *recordingStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
+	if store.err != nil {
+		return User{}, store.err
 	}
 	return store.user, nil
 }
@@ -132,5 +140,28 @@ func TestServiceCreateValidatesInput(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.err)
 			}
 		})
+	}
+}
+
+func TestServiceGetReturnsUser(t *testing.T) {
+	userID := uuid.New()
+	store := &recordingStore{
+		user: User{
+			ID:                 userID,
+			Name:               "Ada Lovelace",
+			Email:              "ada@example.com",
+			AccountType:        AccountTypeIndividual,
+			VerificationStatus: VerificationStatusUnverified,
+		},
+	}
+	service := NewService(store)
+
+	user, err := service.Get(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+
+	if user.ID != userID {
+		t.Fatalf("user id = %s, want %s", user.ID, userID)
 	}
 }

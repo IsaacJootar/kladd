@@ -47,6 +47,39 @@ func (store PostgresStore) Create(ctx context.Context, record CreateRecord) (Use
 	return user, nil
 }
 
+func (store PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
+	var user User
+	err := store.db.QueryRowContext(ctx, `
+SELECT
+    id,
+    name,
+    email,
+    COALESCE(phone, ''),
+    account_type,
+    verification_status,
+    created_at
+FROM users
+WHERE id = $1`,
+		id,
+	).Scan(
+		&user.ID,
+		&user.Name,
+		&user.Email,
+		&user.Phone,
+		&user.AccountType,
+		&user.VerificationStatus,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return User{}, ErrUserNotFound
+		}
+		return User{}, err
+	}
+
+	return user, nil
+}
+
 func insertUser(ctx context.Context, tx *sql.Tx, record CreateRecord) (User, error) {
 	var user User
 	err := tx.QueryRowContext(ctx, `

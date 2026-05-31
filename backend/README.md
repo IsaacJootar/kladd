@@ -9,6 +9,7 @@ Go API scaffold for Kladd.
 - health endpoint at `GET /healthz`
 - user registration endpoint at `POST /api/users`
 - user login endpoint at `POST /api/auth/login`
+- current account endpoint at `GET /api/account/me`
 - Security PIN setup endpoint at `POST /api/account/security-pin`
 - initial PostgreSQL migration for `users` and `audit_logs`
 - PostgreSQL connection package
@@ -45,6 +46,12 @@ Passwords are hashed before storage. Responses do not include passwords or passw
 ```
 
 Login responses include only safe user fields and token metadata.
+
+## Current Account
+
+`GET /api/account/me` returns safe profile fields for the authenticated user.
+
+Requests require `Authorization: Bearer <access_token>`. Responses do not include passwords, password hashes, Security PIN values, Security PIN hashes, raw documents, or sensitive identity anchors.
 
 ## Security PIN Setup
 

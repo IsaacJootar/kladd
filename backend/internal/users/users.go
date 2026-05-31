@@ -24,6 +24,7 @@ var (
 	ErrInvalidPassword    = errors.New("password must be at least 8 characters")
 	ErrInvalidAccountType = errors.New("account_type must be individual or business")
 	ErrEmailTaken         = errors.New("email is already registered")
+	ErrUserNotFound       = errors.New("user not found")
 )
 
 type CreateInput struct {
@@ -56,6 +57,7 @@ type User struct {
 
 type Store interface {
 	Create(ctx context.Context, record CreateRecord) (User, error)
+	Get(ctx context.Context, id uuid.UUID) (User, error)
 }
 
 type Service struct {
@@ -73,6 +75,10 @@ func (service Service) Create(ctx context.Context, input CreateInput) (User, err
 	}
 
 	return service.store.Create(ctx, record)
+}
+
+func (service Service) Get(ctx context.Context, id uuid.UUID) (User, error) {
+	return service.store.Get(ctx, id)
 }
 
 func prepareCreateRecord(input CreateInput) (CreateRecord, error) {

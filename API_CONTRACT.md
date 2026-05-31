@@ -7,6 +7,7 @@
 ## Account Endpoints
 - POST /api/users
 - POST /api/auth/login
+- GET /api/account/me
 - POST /api/account/security-pin
 - POST /api/account/security-pin/reset
 
@@ -41,6 +42,13 @@ Create user responses must not include passwords, password hashes, raw documents
 ```
 
 Login responses return a short-lived JWT access token and safe user fields only. They must not include passwords, password hashes, raw documents, or sensitive identity anchors.
+
+## Current Account
+GET /api/account/me
+
+Requires `Authorization: Bearer <access_token>`.
+
+Current account responses return safe user fields only. They must not include passwords, password hashes, Security PIN values, Security PIN hashes, raw documents, or sensitive identity anchors.
 
 ## Set Security PIN Request Body
 ```json

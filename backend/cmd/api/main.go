@@ -36,7 +36,7 @@ func main() {
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService, pinService, authService),
+		Handler:           server.NewRouter(cfg, userService, userService, pinService, authService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

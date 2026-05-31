@@ -18,6 +18,10 @@ type UserCreator interface {
 	Create(ctx context.Context, input users.CreateInput) (users.User, error)
 }
 
+type UserGetter interface {
+	Get(ctx context.Context, id uuid.UUID) (users.User, error)
+}
+
 type SecurityPINSetter interface {
 	Setup(ctx context.Context, input securitypin.SetupInput) (securitypin.SetupResult, error)
 }
@@ -27,11 +31,12 @@ type Authenticator interface {
 	Authenticate(tokenString string) (uuid.UUID, error)
 }
 
-func NewRouter(cfg config.Config, userCreator UserCreator, pinSetter SecurityPINSetter, authenticator Authenticator) http.Handler {
+func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
 	mux.HandleFunc("/api/auth/login", loginHandler(authenticator))
+	mux.HandleFunc("/api/account/me", currentAccountHandler(userGetter, authenticator))
 	mux.HandleFunc("/api/account/security-pin", setupSecurityPINHandler(pinSetter, authenticator))
 
 	return mux
@@ -127,6 +132,28 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+func currentAccountHandler(userGetter UserGetter, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, ok := authenticateRequest(w, r, authenticator)
+		if !ok {
+			return
+		}
+
+		user, err := userGetter.Get(r.Context(), userID)
+		if err != nil {
+			writeCurrentAccountError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, user)
+	}
+}
+
 func setupSecurityPINHandler(pinSetter SecurityPINSetter, authenticator Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -187,6 +214,15 @@ func writeLoginError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Email or password is incorrect.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to log in.")
+	}
+}
+
+func writeCurrentAccountError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, users.ErrUserNotFound):
+		writeError(w, http.StatusNotFound, "user_not_found", "User was not found.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load current account.")
 	}
 }
 

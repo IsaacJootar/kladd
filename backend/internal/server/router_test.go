@@ -32,6 +32,20 @@ func (creator *fakeUserCreator) Create(ctx context.Context, input users.CreateIn
 	return creator.user, nil
 }
 
+type fakeUserGetter struct {
+	user   users.User
+	err    error
+	userID uuid.UUID
+}
+
+func (getter *fakeUserGetter) Get(ctx context.Context, id uuid.UUID) (users.User, error) {
+	getter.userID = id
+	if getter.err != nil {
+		return users.User{}, getter.err
+	}
+	return getter.user, nil
+}
+
 type fakeSecurityPINSetter struct {
 	result securitypin.SetupResult
 	err    error
@@ -71,9 +85,12 @@ func (authenticator *fakeAuthenticator) Authenticate(tokenString string) (uuid.U
 	return authenticator.userID, nil
 }
 
-func newTestRouter(userCreator *fakeUserCreator, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator) http.Handler {
+func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator) http.Handler {
 	if userCreator == nil {
 		userCreator = &fakeUserCreator{}
+	}
+	if userGetter == nil {
+		userGetter = &fakeUserGetter{}
 	}
 	if pinSetter == nil {
 		pinSetter = &fakeSecurityPINSetter{}
@@ -82,7 +99,7 @@ func newTestRouter(userCreator *fakeUserCreator, pinSetter *fakeSecurityPINSette
 		authenticator = &fakeAuthenticator{userID: uuid.New()}
 	}
 
-	return NewRouter(config.Config{}, userCreator, pinSetter, authenticator)
+	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, authenticator)
 }
 
 func TestCreateUserHandlerCreatesUser(t *testing.T) {
@@ -95,7 +112,7 @@ func TestCreateUserHandlerCreatesUser(t *testing.T) {
 			VerificationStatus: users.VerificationStatusUnverified,
 		},
 	}
-	router := newTestRouter(creator, nil, nil)
+	router := newTestRouter(creator, nil, nil, nil)
 
 	requestBody := `{"name":"Ada Lovelace","email":"ada@example.com","password":"strong-password","account_type":"individual"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(requestBody))
@@ -126,7 +143,7 @@ func TestCreateUserHandlerCreatesUser(t *testing.T) {
 }
 
 func TestCreateUserHandlerRejectsInvalidJSON(t *testing.T) {
-	router := newTestRouter(nil, nil, nil)
+	router := newTestRouter(nil, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/users", bytes.NewBufferString(`{`))
 	response := httptest.NewRecorder()
 
@@ -153,7 +170,7 @@ func TestCreateUserHandlerMapsValidationErrors(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			router := newTestRouter(&fakeUserCreator{err: test.err}, nil, nil)
+			router := newTestRouter(&fakeUserCreator{err: test.err}, nil, nil, nil)
 			request := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(`{"name":"Ada Lovelace","email":"ada@example.com","password":"strong-password"}`))
 			response := httptest.NewRecorder()
 
@@ -167,7 +184,7 @@ func TestCreateUserHandlerMapsValidationErrors(t *testing.T) {
 }
 
 func TestCreateUserHandlerRequiresPost(t *testing.T) {
-	router := newTestRouter(nil, nil, nil)
+	router := newTestRouter(nil, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodGet, "/api/users", nil)
 	response := httptest.NewRecorder()
 
@@ -192,7 +209,7 @@ func TestLoginHandlerLogsUserIn(t *testing.T) {
 			},
 		},
 	}
-	router := newTestRouter(nil, nil, authenticator)
+	router := newTestRouter(nil, nil, nil, authenticator)
 
 	request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"ada@example.com","password":"strong-password"}`))
 	response := httptest.NewRecorder()
@@ -226,7 +243,7 @@ func TestLoginHandlerLogsUserIn(t *testing.T) {
 }
 
 func TestLoginHandlerRejectsInvalidJSON(t *testing.T) {
-	router := newTestRouter(nil, nil, nil)
+	router := newTestRouter(nil, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{`))
 	response := httptest.NewRecorder()
 
@@ -249,7 +266,7 @@ func TestLoginHandlerMapsErrors(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			router := newTestRouter(nil, nil, &fakeAuthenticator{loginErr: test.err})
+			router := newTestRouter(nil, nil, nil, &fakeAuthenticator{loginErr: test.err})
 			request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"ada@example.com","password":"strong-password"}`))
 			response := httptest.NewRecorder()
 
@@ -263,8 +280,125 @@ func TestLoginHandlerMapsErrors(t *testing.T) {
 }
 
 func TestLoginHandlerRequiresPost(t *testing.T) {
-	router := newTestRouter(nil, nil, nil)
+	router := newTestRouter(nil, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodGet, "/api/auth/login", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestCurrentAccountHandlerReturnsAuthenticatedUser(t *testing.T) {
+	userID := uuid.New()
+	getter := &fakeUserGetter{
+		user: users.User{
+			ID:                 userID,
+			Name:               "Ada Lovelace",
+			Email:              "ada@example.com",
+			AccountType:        users.AccountTypeIndividual,
+			VerificationStatus: users.VerificationStatusUnverified,
+		},
+	}
+	authenticator := &fakeAuthenticator{userID: userID}
+	router := newTestRouter(nil, getter, nil, authenticator)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/account/me", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	if getter.userID != userID {
+		t.Fatalf("user id = %s, want %s", getter.userID, userID)
+	}
+
+	if authenticator.token != "test-token" {
+		t.Fatalf("token = %q, want test-token", authenticator.token)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if _, ok := payload["password"]; ok {
+		t.Fatal("response exposed password")
+	}
+
+	if _, ok := payload["password_hash"]; ok {
+		t.Fatal("response exposed password hash")
+	}
+
+	if _, ok := payload["security_pin"]; ok {
+		t.Fatal("response exposed security pin")
+	}
+
+	if _, ok := payload["security_pin_hash"]; ok {
+		t.Fatal("response exposed security pin hash")
+	}
+}
+
+func TestCurrentAccountHandlerRequiresBearerToken(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/account/me", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestCurrentAccountHandlerRejectsInvalidToken(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{authErr: auth.ErrInvalidToken})
+	request := httptest.NewRequest(http.MethodGet, "/api/account/me", nil)
+	request.Header.Set("Authorization", "Bearer bad-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestCurrentAccountHandlerMapsErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "user not found", err: users.ErrUserNotFound, status: http.StatusNotFound},
+		{name: "unknown error", err: errors.New("boom"), status: http.StatusInternalServerError},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			router := newTestRouter(nil, &fakeUserGetter{err: test.err}, nil, &fakeAuthenticator{userID: uuid.New()})
+			request := httptest.NewRequest(http.MethodGet, "/api/account/me", nil)
+			request.Header.Set("Authorization", "Bearer test-token")
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+		})
+	}
+}
+
+func TestCurrentAccountHandlerRequiresGet(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/account/me", nil)
 	response := httptest.NewRecorder()
 
 	router.ServeHTTP(response, request)
@@ -284,7 +418,7 @@ func TestSetupSecurityPINHandlerSetsPIN(t *testing.T) {
 		},
 	}
 	authenticator := &fakeAuthenticator{userID: userID}
-	router := newTestRouter(nil, setter, authenticator)
+	router := newTestRouter(nil, nil, setter, authenticator)
 
 	requestBody := `{"security_pin":"4829"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/account/security-pin", strings.NewReader(requestBody))
@@ -324,7 +458,7 @@ func TestSetupSecurityPINHandlerSetsPIN(t *testing.T) {
 }
 
 func TestSetupSecurityPINHandlerRejectsInvalidJSON(t *testing.T) {
-	router := newTestRouter(nil, nil, &fakeAuthenticator{userID: uuid.New()})
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
 	request := httptest.NewRequest(http.MethodPost, "/api/account/security-pin", bytes.NewBufferString(`{`))
 	request.Header.Set("Authorization", "Bearer test-token")
 	response := httptest.NewRecorder()
@@ -337,7 +471,7 @@ func TestSetupSecurityPINHandlerRejectsInvalidJSON(t *testing.T) {
 }
 
 func TestSetupSecurityPINHandlerRequiresBearerToken(t *testing.T) {
-	router := newTestRouter(nil, nil, nil)
+	router := newTestRouter(nil, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/account/security-pin", strings.NewReader(`{"security_pin":"4829"}`))
 	response := httptest.NewRecorder()
 
@@ -349,7 +483,7 @@ func TestSetupSecurityPINHandlerRequiresBearerToken(t *testing.T) {
 }
 
 func TestSetupSecurityPINHandlerRejectsInvalidToken(t *testing.T) {
-	router := newTestRouter(nil, nil, &fakeAuthenticator{authErr: auth.ErrInvalidToken})
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{authErr: auth.ErrInvalidToken})
 	request := httptest.NewRequest(http.MethodPost, "/api/account/security-pin", strings.NewReader(`{"security_pin":"4829"}`))
 	request.Header.Set("Authorization", "Bearer bad-token")
 	response := httptest.NewRecorder()
@@ -374,7 +508,7 @@ func TestSetupSecurityPINHandlerMapsErrors(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			router := newTestRouter(nil, &fakeSecurityPINSetter{err: test.err}, &fakeAuthenticator{userID: uuid.New()})
+			router := newTestRouter(nil, nil, &fakeSecurityPINSetter{err: test.err}, &fakeAuthenticator{userID: uuid.New()})
 			request := httptest.NewRequest(http.MethodPost, "/api/account/security-pin", strings.NewReader(`{"security_pin":"4829"}`))
 			request.Header.Set("Authorization", "Bearer test-token")
 			response := httptest.NewRecorder()
@@ -389,7 +523,7 @@ func TestSetupSecurityPINHandlerMapsErrors(t *testing.T) {
 }
 
 func TestSetupSecurityPINHandlerRequiresPost(t *testing.T) {
-	router := newTestRouter(nil, nil, nil)
+	router := newTestRouter(nil, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodGet, "/api/account/security-pin", nil)
 	response := httptest.NewRecorder()
 
