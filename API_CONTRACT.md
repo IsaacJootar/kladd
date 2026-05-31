@@ -4,6 +4,11 @@
 - JWT access tokens
 - API keys for organizations
 
+## Account Endpoints
+- POST /api/users
+- POST /api/account/security-pin
+- POST /api/account/security-pin/reset
+
 ## Core Endpoints
 - POST /api/claim-requests
 - GET /api/claim-requests/{id}
@@ -12,8 +17,19 @@
 - GET /api/claims/{id}
 - GET /api/claims/{id}/status
 - POST /api/claims/{id}/revoke
-- POST /api/account/security-pin
-- POST /api/account/security-pin/reset
+
+## Create User Request Body
+```json
+{
+  "name": "Ada Lovelace",
+  "email": "ada@example.com",
+  "phone": "08030000000",
+  "password": "strong-password",
+  "account_type": "individual"
+}
+```
+
+Create user responses must not include passwords, password hashes, raw documents, or sensitive identity anchors.
 
 ## Approve Request Body
 ```json

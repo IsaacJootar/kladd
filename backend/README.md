@@ -7,12 +7,29 @@ Go API scaffold for Kladd.
 - HTTP server entrypoint
 - environment-based config
 - health endpoint at `GET /healthz`
+- user registration endpoint at `POST /api/users`
 - initial PostgreSQL migration for `users` and `audit_logs`
 - PostgreSQL connection package
 - migration runner command
 - Security PIN validation, hashing, comparison, and lockout helpers
 
-No claim, consent, evidence, identity anchor, or truth release logic is implemented in this module.
+No login session, claim, consent, evidence, identity anchor, or truth release logic is implemented in this module.
+
+## User Registration
+
+`POST /api/users` creates an account and returns only non-sensitive user fields.
+
+```json
+{
+  "name": "Ada Lovelace",
+  "email": "ada@example.com",
+  "phone": "08030000000",
+  "password": "strong-password",
+  "account_type": "individual"
+}
+```
+
+Passwords are hashed before storage. Responses do not include passwords or password hashes.
 
 ## Environment
 
