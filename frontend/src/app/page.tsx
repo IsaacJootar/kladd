@@ -42,23 +42,41 @@ type EvidenceListResponse = {
   items: EvidenceItem[];
 };
 
-type TruthDefinition = {
-  id: string;
-  truth_key: string;
-  category: string;
-  return_type: string;
-  sensitivity: string;
-  validity_days: number;
-  derivation_rule: string;
-  required_evidence: string[];
-  created_at: string;
-};
-
-type TruthDefinitionListResponse = {
-  items: TruthDefinition[];
+type ProofPreview = {
+  title: string;
+  description: string;
+  recordHint: string;
+  accent: "indigo" | "emerald" | "amber";
 };
 
 const navItems = ["Home", "My Records", "Requests", "Proofs", "Security"];
+
+const proofPreviews: ProofPreview[] = [
+  {
+    title: "Identity proof",
+    description: "Confirm who you are without sharing your full ID document.",
+    recordHint: "Passport or government ID",
+    accent: "indigo",
+  },
+  {
+    title: "Address proof",
+    description: "Confirm your current address when a requester needs it.",
+    recordHint: "Utility bill",
+    accent: "emerald",
+  },
+  {
+    title: "Education proof",
+    description: "Prepare degree or certificate confirmation for approvals.",
+    recordHint: "Degree certificate",
+    accent: "amber",
+  },
+  {
+    title: "Business proof",
+    description: "Confirm business registration details with your approval.",
+    recordHint: "Business registration",
+    accent: "indigo",
+  },
+];
 
 const emptyRegisterForm = {
   name: "",
@@ -91,9 +109,7 @@ export default function Home() {
     readSessionValue("kladd_token_expiry"),
   );
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [pinState, setPinState] = useState<PinResponse | null>(null);
   const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
-  const [truthDefinitions, setTruthDefinitions] = useState<TruthDefinition[]>([]);
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -108,18 +124,12 @@ export default function Home() {
         value: currentUser?.verification_status ?? "Not started",
       },
       { label: "Pending Requests", value: "0" },
-      { label: "Supported Proofs", value: String(truthDefinitions.length) },
-      {
-        label: "My Evidence",
-        value: String(evidenceItems.length),
-      },
-      { label: "Security PIN", value: pinState?.security_pin_set ? "Set" : "Not set" },
+      { label: "Active Proofs", value: "0" },
+      { label: "Recent Activity", value: evidenceItems.length > 0 ? "Records added" : "Ready" },
     ],
     [
       currentUser?.verification_status,
-      truthDefinitions.length,
       evidenceItems.length,
-      pinState?.security_pin_set,
     ],
   );
 
@@ -135,13 +145,11 @@ export default function Home() {
         token,
       }),
       loadEvidenceItems(token),
-      loadTruthDefinitions(token),
     ])
-      .then(([user, evidence, truths]) => {
+      .then(([user, evidence]) => {
         if (!ignore) {
           setCurrentUser(user);
           setEvidenceItems(evidence);
-          setTruthDefinitions(truths);
         }
       })
       .catch(() => {
@@ -150,9 +158,7 @@ export default function Home() {
           setToken("");
           setTokenExpiry("");
           setCurrentUser(null);
-          setPinState(null);
           setEvidenceItems([]);
-          setTruthDefinitions([]);
         }
       });
 
@@ -217,9 +223,12 @@ export default function Home() {
         token,
         body: JSON.stringify({ security_pin: securityPIN }),
       });
-      setPinState(result);
       setSecurityPIN("");
-      setNotice("Security PIN set. Future claim approvals will require it.");
+      setNotice(
+        result.security_pin_set
+          ? "Security PIN set. Future claim approvals will require it."
+          : "Security PIN was not updated.",
+      );
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -230,12 +239,12 @@ export default function Home() {
   async function handleEvidenceUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!token) {
-      setError("Please sign in before adding evidence.");
+      setError("Please sign in before adding a record.");
       return;
     }
 
     if (!evidenceForm.file) {
-      setError("Choose an evidence file first.");
+      setError("Choose a file for this record first.");
       return;
     }
 
@@ -254,7 +263,7 @@ export default function Home() {
       });
       setEvidenceItems((items) => [item, ...items]);
       setEvidenceForm(emptyEvidenceForm);
-      setNotice("Evidence record added.");
+      setNotice("Record added.");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -278,9 +287,7 @@ export default function Home() {
     setToken("");
     setTokenExpiry("");
     setCurrentUser(null);
-    setPinState(null);
     setEvidenceItems([]);
-    setTruthDefinitions([]);
     setEvidenceForm(emptyEvidenceForm);
     clearAuthStorage();
     setNotice("Signed out.");
@@ -331,8 +338,8 @@ export default function Home() {
                     Control your proofs
                   </h2>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                    Create your account, sign in, and prepare the Security PIN
-                    that protects future claim approvals.
+                    Keep your records ready, review requests clearly, and approve
+                    only the proofs you want to release.
                   </p>
                 </div>
 
@@ -356,7 +363,7 @@ export default function Home() {
                     <p className="text-sm font-medium text-slate-500">
                       {card.label}
                     </p>
-                    <p className="mt-3 text-2xl font-semibold capitalize text-slate-950">
+                    <p className="mt-3 text-2xl font-semibold text-slate-950">
                       {card.value}
                     </p>
                   </article>
@@ -389,10 +396,10 @@ export default function Home() {
                     />
                     <ProfileField
                       label="Account type"
-                      value={currentUser.account_type}
+                      value={formatCategory(currentUser.account_type)}
                     />
                     <ProfileField
-                      label="Token expires"
+                      label="Signed in until"
                       value={formatDateTime(tokenExpiry)}
                     />
                   </dl>
@@ -405,8 +412,13 @@ export default function Home() {
                         My Records
                       </p>
                       <h2 className="mt-1 text-xl font-semibold tracking-normal">
-                        Evidence vault
+                        Your saved records
                       </h2>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
+                        Store documents here so Kladd can prepare approved
+                        proofs later. Requesters do not receive raw files by
+                        default.
+                      </p>
                     </div>
                     <span className="w-fit rounded-md bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-800">
                       {evidenceItems.length} records
@@ -420,7 +432,8 @@ export default function Home() {
                       ))
                     ) : (
                       <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500 md:col-span-2">
-                        No records yet.
+                        No records yet. Add your first record from the panel on
+                        the right.
                       </div>
                     )}
                   </div>
@@ -433,27 +446,22 @@ export default function Home() {
                         Proofs
                       </p>
                       <h2 className="mt-1 text-xl font-semibold tracking-normal">
-                        Supported truths
+                        Proofs Kladd can prepare
                       </h2>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
+                        These are the kinds of confirmations you will be able to
+                        approve when your matching records are verified.
+                      </p>
                     </div>
                     <span className="w-fit rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
-                      {truthDefinitions.length} definitions
+                      User controlled
                     </span>
                   </div>
 
                   <div className="mt-5 grid gap-3 md:grid-cols-2">
-                    {truthDefinitions.length > 0 ? (
-                      truthDefinitions.map((definition) => (
-                        <TruthDefinitionCard
-                          key={definition.id}
-                          definition={definition}
-                        />
-                      ))
-                    ) : (
-                      <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500 md:col-span-2">
-                        No truth definitions loaded.
-                      </div>
-                    )}
+                    {proofPreviews.map((proof) => (
+                      <ProofPreviewCard key={proof.title} proof={proof} />
+                    ))}
                   </div>
                 </section>
               </>
@@ -600,7 +608,7 @@ export default function Home() {
                   My Records
                 </p>
                 <h2 className="mt-1 text-lg font-semibold tracking-normal">
-                  Add evidence
+                  Add a record
                 </h2>
               </div>
 
@@ -660,7 +668,7 @@ export default function Home() {
                 </label>
 
                 <SubmitButton disabled={!signedIn || isSubmitting}>
-                  Add evidence
+                  Add record
                 </SubmitButton>
               </form>
             </section>
@@ -707,7 +715,7 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
           </p>
         </div>
         <span className="rounded-md bg-amber-50 px-2.5 py-1 text-xs font-semibold capitalize text-amber-800">
-          {formatCategory(item.status)}
+          {formatRecordStatus(item.status)}
         </span>
       </div>
 
@@ -735,47 +743,17 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
   );
 }
 
-function TruthDefinitionCard({
-  definition,
-}: {
-  definition: TruthDefinition;
-}) {
+function ProofPreviewCard({ proof }: { proof: ProofPreview }) {
   return (
-    <article className="min-h-44 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="break-words text-sm font-semibold text-slate-950">
-            {definition.truth_key}
-          </p>
-          <p className="mt-1 text-sm capitalize text-slate-500">
-            {formatCategory(definition.category)}
-          </p>
-        </div>
-        <span className={sensitivityClass(definition.sensitivity)}>
-          {definition.sensitivity}
-        </span>
-      </div>
-
-      <dl className="mt-5 space-y-2 text-sm">
-        <div className="flex justify-between gap-3">
-          <dt className="text-slate-500">Return</dt>
-          <dd className="font-medium capitalize text-slate-800">
-            {formatCategory(definition.return_type)}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-3">
-          <dt className="text-slate-500">Valid for</dt>
-          <dd className="font-medium text-slate-800">
-            {definition.validity_days} days
-          </dd>
-        </div>
-        <div>
-          <dt className="text-slate-500">Evidence</dt>
-          <dd className="mt-1 text-sm font-medium capitalize text-slate-800">
-            {definition.required_evidence.map(formatCategory).join(", ")}
-          </dd>
-        </div>
-      </dl>
+    <article className="min-h-40 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
+      <div className={`mb-4 h-1.5 w-16 rounded-full ${proofAccentClass(proof.accent)}`} />
+      <p className="text-sm font-semibold text-slate-950">{proof.title}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-600">
+        {proof.description}
+      </p>
+      <p className="mt-4 rounded-md bg-white px-3 py-2 text-sm font-medium text-slate-700">
+        Starts with: {proof.recordHint}
+      </p>
     </article>
   );
 }
@@ -923,18 +901,6 @@ async function loadEvidenceItems(accessToken: string) {
   return response.items;
 }
 
-async function loadTruthDefinitions(accessToken: string) {
-  const response = await apiRequest<TruthDefinitionListResponse>(
-    "/truth-definitions",
-    {
-      method: "GET",
-      token: accessToken,
-    },
-  );
-
-  return response.items;
-}
-
 function parseJSON(text: string) {
   if (!text) {
     return null;
@@ -986,18 +952,27 @@ function formatCategory(value: string) {
   return value.replaceAll("_", " ");
 }
 
-function sensitivityClass(value: string) {
-  const base =
-    "rounded-md px-2.5 py-1 text-xs font-semibold capitalize";
-  if (value === "low") {
-    return `${base} bg-emerald-50 text-emerald-800`;
+function formatRecordStatus(value: string) {
+  if (value === "uploaded") {
+    return "Added";
   }
-  if (value === "medium") {
-    return `${base} bg-amber-50 text-amber-800`;
+  if (value === "verified") {
+    return "Verified";
   }
-  if (value === "high") {
-    return `${base} bg-red-50 text-red-800`;
+  if (value === "rejected") {
+    return "Needs review";
   }
 
-  return `${base} bg-slate-100 text-slate-700`;
+  return formatCategory(value);
+}
+
+function proofAccentClass(accent: ProofPreview["accent"]) {
+  if (accent === "emerald") {
+    return "bg-emerald-500";
+  }
+  if (accent === "amber") {
+    return "bg-amber-500";
+  }
+
+  return "bg-indigo-600";
 }
