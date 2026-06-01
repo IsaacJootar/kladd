@@ -147,24 +147,29 @@ WITH updated AS (
     WHERE claims.claim_request_id = cr.id
         AND cr.user_id = $1
         AND claims.id = $2
-    RETURNING claims.id
+    RETURNING
+        claims.id,
+        claims.claim_request_id,
+        claims.status,
+        claims.issued_at,
+        claims.expires_at,
+        claims.revoked_at
 )
 SELECT
-    c.id,
-    c.claim_request_id,
-    c.status,
-    c.issued_at,
-    c.expires_at,
-    c.revoked_at,
+    updated.id,
+    updated.claim_request_id,
+    updated.status,
+    updated.issued_at,
+    updated.expires_at,
+    updated.revoked_at,
     cr.purpose,
     cr.scope_json,
     org.id,
     org.name,
     org.organization_type,
     org.verification_status
-FROM claims c
-JOIN updated ON updated.id = c.id
-JOIN claim_requests cr ON cr.id = c.claim_request_id
+FROM updated
+JOIN claim_requests cr ON cr.id = updated.claim_request_id
 JOIN organizations org ON org.id = cr.organization_id`,
 		userID,
 		claimID,

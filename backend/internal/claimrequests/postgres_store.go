@@ -185,23 +185,22 @@ WITH inserted AS (
         status,
         expires_at
     ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
-    RETURNING id
+    RETURNING id, user_id, purpose, scope_json, status, expires_at, created_at, organization_id
 )
 SELECT
-    cr.id,
-    cr.user_id,
-    cr.purpose,
-    cr.scope_json,
-    cr.status,
-    cr.expires_at,
-    cr.created_at,
+    inserted.id,
+    inserted.user_id,
+    inserted.purpose,
+    inserted.scope_json,
+    inserted.status,
+    inserted.expires_at,
+    inserted.created_at,
     org.id,
     org.name,
     org.organization_type,
     org.verification_status
-FROM claim_requests cr
-JOIN inserted ON inserted.id = cr.id
-JOIN organizations org ON org.id = cr.organization_id`,
+FROM inserted
+JOIN organizations org ON org.id = inserted.organization_id`,
 		record.ID,
 		record.OrganizationID,
 		record.UserID,
@@ -326,23 +325,22 @@ WITH updated AS (
     UPDATE claim_requests
     SET status = $2
     WHERE id = $1
-    RETURNING id
+    RETURNING id, user_id, purpose, scope_json, status, expires_at, created_at, organization_id
 )
 SELECT
-    cr.id,
-    cr.user_id,
-    cr.purpose,
-    cr.scope_json,
-    cr.status,
-    cr.expires_at,
-    cr.created_at,
+    updated.id,
+    updated.user_id,
+    updated.purpose,
+    updated.scope_json,
+    updated.status,
+    updated.expires_at,
+    updated.created_at,
     org.id,
     org.name,
     org.organization_type,
     org.verification_status
-FROM claim_requests cr
-JOIN updated ON updated.id = cr.id
-JOIN organizations org ON org.id = cr.organization_id`,
+FROM updated
+JOIN organizations org ON org.id = updated.organization_id`,
 		requestID,
 		StatusApprovedWithPIN,
 	))
