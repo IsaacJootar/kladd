@@ -130,8 +130,10 @@ func (lister *fakeTruthDefinitionLister) ListDefinitions(ctx context.Context) ([
 type fakeClaimRequestManager struct {
 	request  claimrequests.ClaimRequest
 	requests []claimrequests.ClaimRequest
+	approval claimrequests.ApprovalResult
 	err      error
 	input    claimrequests.CreateInput
+	approve  claimrequests.ApproveInput
 	userID   uuid.UUID
 	getID    uuid.UUID
 }
@@ -159,6 +161,14 @@ func (manager *fakeClaimRequestManager) GetForUser(ctx context.Context, userID u
 		return claimrequests.ClaimRequest{}, manager.err
 	}
 	return manager.request, nil
+}
+
+func (manager *fakeClaimRequestManager) Approve(ctx context.Context, input claimrequests.ApproveInput) (claimrequests.ApprovalResult, error) {
+	manager.approve = input
+	if manager.err != nil {
+		return claimrequests.ApprovalResult{}, manager.err
+	}
+	return manager.approval, nil
 }
 
 func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator, evidenceManagers ...*fakeEvidenceManager) http.Handler {
@@ -1030,6 +1040,123 @@ func TestClaimRequestByIDHandlerReturnsOwnedRequest(t *testing.T) {
 	}
 	if manager.getID != requestID {
 		t.Fatalf("request id = %s, want %s", manager.getID, requestID)
+	}
+}
+
+func TestClaimRequestApproveHandlerApprovesWithSecurityPIN(t *testing.T) {
+	userID := uuid.New()
+	requestID := uuid.New()
+	claimID := uuid.New()
+	consentID := uuid.New()
+	manager := &fakeClaimRequestManager{
+		approval: claimrequests.ApprovalResult{
+			ConsentID: consentID,
+			ClaimID:   claimID,
+			ClaimRequest: claimrequests.ClaimRequest{
+				ID:              requestID,
+				Organization:    claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank", OrganizationType: "bank"},
+				UserID:          userID,
+				Purpose:         "Employment onboarding",
+				RequestedTruths: []string{"identity_verified"},
+				Status:          claimrequests.StatusApprovedWithPIN,
+				ExpiresAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+				CreatedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			},
+			ApprovedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: userID},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/claim-requests/"+requestID.String()+"/approve", strings.NewReader(`{"security_pin":"4829"}`))
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("X-Forwarded-For", "127.0.0.1")
+	request.Header.Set("User-Agent", "test-agent")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.approve.UserID != userID {
+		t.Fatalf("user id = %s, want %s", manager.approve.UserID, userID)
+	}
+	if manager.approve.RequestID != requestID {
+		t.Fatalf("request id = %s, want %s", manager.approve.RequestID, requestID)
+	}
+	if manager.approve.SecurityPIN != "4829" {
+		t.Fatalf("security pin = %q, want 4829", manager.approve.SecurityPIN)
+	}
+	if manager.approve.IPAddress != "127.0.0.1" {
+		t.Fatalf("ip address = %q, want 127.0.0.1", manager.approve.IPAddress)
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{`"security_pin"`, "security_pin_hash", "raw_document", "file_path", "truth_value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestClaimRequestApproveHandlerMapsErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "not found", err: claimrequests.ErrClaimRequestNotFound, status: http.StatusNotFound},
+		{name: "pin not set", err: securitypin.ErrPINNotSet, status: http.StatusBadRequest},
+		{name: "bad pin", err: securitypin.ErrInvalidPIN, status: http.StatusUnauthorized},
+		{name: "pin locked", err: securitypin.ErrPINLocked, status: http.StatusTooManyRequests},
+		{name: "expired", err: claimrequests.ErrClaimRequestExpired, status: http.StatusConflict},
+		{name: "not open", err: claimrequests.ErrClaimRequestNotOpen, status: http.StatusConflict},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			router := NewRouter(
+				config.Config{},
+				&fakeUserCreator{},
+				&fakeUserGetter{},
+				&fakeSecurityPINSetter{},
+				&fakeAuthenticator{userID: uuid.New()},
+				&fakeEvidenceManager{},
+				&fakeTruthDefinitionLister{},
+				&fakeClaimRequestManager{err: test.err},
+			)
+			request := httptest.NewRequest(http.MethodPost, "/api/claim-requests/"+uuid.New().String()+"/approve", strings.NewReader(`{"security_pin":"4829"}`))
+			request.Header.Set("Authorization", "Bearer test-token")
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+		})
+	}
+}
+
+func TestClaimRequestApproveHandlerRequiresPost(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
+	request := httptest.NewRequest(http.MethodGet, "/api/claim-requests/"+uuid.New().String()+"/approve", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
 	}
 }
 

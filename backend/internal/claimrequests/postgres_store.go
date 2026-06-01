@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -89,6 +90,55 @@ WHERE cr.user_id = $1 AND cr.id = $2`,
 	}
 
 	return request, nil
+}
+
+func (store PostgresStore) Approve(ctx context.Context, record ApproveRecord) (ApprovalResult, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ApprovalResult{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	request, err := lockClaimRequestForApproval(ctx, tx, record.UserID, record.RequestID)
+	if err != nil {
+		return ApprovalResult{}, err
+	}
+	if request.Status != StatusPendingApproval {
+		return ApprovalResult{}, ErrClaimRequestNotOpen
+	}
+	if !request.ExpiresAt.After(record.ApprovedAt) {
+		return ApprovalResult{}, ErrClaimRequestExpired
+	}
+
+	if err := insertClaim(ctx, tx, record, request.ExpiresAt); err != nil {
+		return ApprovalResult{}, err
+	}
+
+	if err := insertConsent(ctx, tx, record, request.Organization.ID); err != nil {
+		return ApprovalResult{}, err
+	}
+
+	approvedRequest, err := updateClaimRequestApproved(ctx, tx, record.RequestID)
+	if err != nil {
+		return ApprovalResult{}, err
+	}
+
+	if err := insertClaimRequestApprovedAudit(ctx, tx, record, approvedRequest); err != nil {
+		return ApprovalResult{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ApprovalResult{}, err
+	}
+
+	return ApprovalResult{
+		ConsentID:    record.ConsentID,
+		ClaimID:      record.ClaimID,
+		ClaimRequest: approvedRequest,
+		ApprovedAt:   record.ApprovedAt,
+	}, nil
 }
 
 func upsertOrganization(ctx context.Context, tx *sql.Tx, record CreateRecord) (Organization, error) {
@@ -198,6 +248,143 @@ INSERT INTO audit_logs (
 	return nil
 }
 
+func lockClaimRequestForApproval(ctx context.Context, tx *sql.Tx, userID uuid.UUID, requestID uuid.UUID) (ClaimRequest, error) {
+	request, err := scanClaimRequest(tx.QueryRowContext(ctx, claimRequestSelectQuery()+`
+WHERE cr.user_id = $1 AND cr.id = $2
+FOR UPDATE OF cr`,
+		userID,
+		requestID,
+	))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ClaimRequest{}, ErrClaimRequestNotFound
+		}
+		return ClaimRequest{}, err
+	}
+
+	return request, nil
+}
+
+func insertClaim(ctx context.Context, tx *sql.Tx, record ApproveRecord, expiresAt time.Time) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO claims (
+    id,
+    claim_request_id,
+    status,
+    issued_at,
+    expires_at
+) VALUES ($1, $2, $3, $4, $5)`,
+		record.ClaimID,
+		record.RequestID,
+		ClaimStatusActive,
+		record.ApprovedAt,
+		expiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert claim: %w", err)
+	}
+
+	return nil
+}
+
+func insertConsent(ctx context.Context, tx *sql.Tx, record ApproveRecord, organizationID uuid.UUID) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO consents (
+    id,
+    claim_request_id,
+    claim_id,
+    user_id,
+    organization_id,
+    approved,
+    approval_method,
+    approved_at,
+    ip_address,
+    user_agent,
+    session_id
+) VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, $8, $9, $10)`,
+		record.ConsentID,
+		record.RequestID,
+		record.ClaimID,
+		record.UserID,
+		organizationID,
+		approvalMethodPIN,
+		record.ApprovedAt,
+		nullString(record.IPAddress),
+		nullString(record.UserAgent),
+		nullString(record.SessionID),
+	)
+	if err != nil {
+		return fmt.Errorf("insert consent: %w", err)
+	}
+
+	return nil
+}
+
+func updateClaimRequestApproved(ctx context.Context, tx *sql.Tx, requestID uuid.UUID) (ClaimRequest, error) {
+	request, err := scanClaimRequest(tx.QueryRowContext(ctx, `
+WITH updated AS (
+    UPDATE claim_requests
+    SET status = $2
+    WHERE id = $1
+    RETURNING id
+)
+SELECT
+    cr.id,
+    cr.user_id,
+    cr.purpose,
+    cr.scope_json,
+    cr.status,
+    cr.expires_at,
+    cr.created_at,
+    org.id,
+    org.name,
+    org.organization_type,
+    org.verification_status
+FROM claim_requests cr
+JOIN updated ON updated.id = cr.id
+JOIN organizations org ON org.id = cr.organization_id`,
+		requestID,
+		StatusApprovedWithPIN,
+	))
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+
+	return request, nil
+}
+
+func insertClaimRequestApprovedAudit(ctx context.Context, tx *sql.Tx, record ApproveRecord, request ClaimRequest) error {
+	metadata, err := json.Marshal(map[string]any{
+		"claim_request_id": request.ID.String(),
+		"claim_id":         record.ClaimID.String(),
+		"consent_id":       record.ConsentID.String(),
+		"method":           approvalMethodPIN,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"user",
+		request.UserID,
+		"claim_request.approved",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert claim request approved audit: %w", err)
+	}
+
+	return nil
+}
+
 func claimRequestSelectQuery() string {
 	return `
 SELECT
@@ -248,4 +435,12 @@ func scanClaimRequest(scanner claimRequestScanner) (ClaimRequest, error) {
 	request.RequestedTruths = scope.RequestedTruths
 
 	return request, nil
+}
+
+func nullString(value string) sql.NullString {
+	if value == "" {
+		return sql.NullString{}
+	}
+
+	return sql.NullString{String: value, Valid: true}
 }

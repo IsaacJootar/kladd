@@ -61,6 +61,13 @@ type ClaimRequestListResponse = {
   items: ClaimRequest[];
 };
 
+type ApprovalResponse = {
+  consent_id: string;
+  claim_id: string;
+  claim_request: ClaimRequest;
+  approved_at: string;
+};
+
 type ProofPreview = {
   title: string;
   description: string;
@@ -130,12 +137,18 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
   const [claimRequests, setClaimRequests] = useState<ClaimRequest[]>([]);
+  const [approvalPINs, setApprovalPINs] = useState<Record<string, string>>({});
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const signedIn = Boolean(token && currentUser);
+  const pendingClaimRequests = useMemo(
+    () =>
+      claimRequests.filter((request) => request.status === "pending_approval"),
+    [claimRequests],
+  );
 
   const statusCards = useMemo(
     () => [
@@ -143,13 +156,13 @@ export default function Home() {
         label: "Identity Status",
         value: currentUser?.verification_status ?? "Not started",
       },
-      { label: "Pending Requests", value: String(claimRequests.length) },
+      { label: "Pending Requests", value: String(pendingClaimRequests.length) },
       { label: "Active Proofs", value: "0" },
       { label: "Recent Activity", value: evidenceItems.length > 0 ? "Records added" : "Ready" },
     ],
     [
       currentUser?.verification_status,
-      claimRequests.length,
+      pendingClaimRequests.length,
       evidenceItems.length,
     ],
   );
@@ -183,6 +196,7 @@ export default function Home() {
           setCurrentUser(null);
           setEvidenceItems([]);
           setClaimRequests([]);
+          setApprovalPINs({});
         }
       });
 
@@ -295,6 +309,43 @@ export default function Home() {
     }
   }
 
+  async function handleApproveClaimRequest(
+    event: FormEvent<HTMLFormElement>,
+    requestID: string,
+  ) {
+    event.preventDefault();
+    if (!token) {
+      setError("Please sign in before approving a request.");
+      return;
+    }
+
+    const securityPIN = approvalPINs[requestID] ?? "";
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const result = await apiRequest<ApprovalResponse>(
+        `/claim-requests/${requestID}/approve`,
+        {
+          method: "POST",
+          token,
+          body: JSON.stringify({ security_pin: securityPIN }),
+        },
+      );
+      setClaimRequests((requests) =>
+        requests.map((request) =>
+          request.id === requestID ? result.claim_request : request,
+        ),
+      );
+      setApprovalPINs((pins) => ({ ...pins, [requestID]: "" }));
+      setNotice("Request approved. A time-bound proof is now active.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function loginWith(email: string, password: string) {
     const login = await apiRequest<LoginResponse>("/auth/login", {
       method: "POST",
@@ -313,6 +364,7 @@ export default function Home() {
     setCurrentUser(null);
     setEvidenceItems([]);
     setClaimRequests([]);
+    setApprovalPINs({});
     setEvidenceForm(emptyEvidenceForm);
     clearAuthStorage();
     setNotice("Signed out.");
@@ -445,14 +497,28 @@ export default function Home() {
                       </p>
                     </div>
                     <span className="w-fit rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-                      {claimRequests.length} pending
+                      {pendingClaimRequests.length} pending
                     </span>
                   </div>
 
                   <div className="mt-5 grid gap-3">
-                    {claimRequests.length > 0 ? (
-                      claimRequests.map((request) => (
-                        <ClaimRequestCard key={request.id} request={request} />
+                    {pendingClaimRequests.length > 0 ? (
+                      pendingClaimRequests.map((request) => (
+                        <ClaimRequestCard
+                          key={request.id}
+                          request={request}
+                          approvalPIN={approvalPINs[request.id] ?? ""}
+                          isSubmitting={isSubmitting}
+                          onPINChange={(value) =>
+                            setApprovalPINs((pins) => ({
+                              ...pins,
+                              [request.id]: value,
+                            }))
+                          }
+                          onApprove={(event) =>
+                            handleApproveClaimRequest(event, request.id)
+                          }
+                        />
                       ))
                     ) : (
                       <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500">
@@ -800,7 +866,21 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
   );
 }
 
-function ClaimRequestCard({ request }: { request: ClaimRequest }) {
+function ClaimRequestCard({
+  request,
+  approvalPIN,
+  isSubmitting,
+  onPINChange,
+  onApprove,
+}: {
+  request: ClaimRequest;
+  approvalPIN: string;
+  isSubmitting: boolean;
+  onPINChange: (value: string) => void;
+  onApprove: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const canApprove = request.status === "pending_approval";
+
   return (
     <article className="rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -840,6 +920,27 @@ function ClaimRequestCard({ request }: { request: ClaimRequest }) {
           </dd>
         </div>
       </dl>
+
+      {canApprove ? (
+        <form
+          className="mt-4 grid gap-3 border-t border-slate-200 pt-4 sm:grid-cols-[minmax(0,1fr)_160px]"
+          onSubmit={onApprove}
+        >
+          <TextInput
+            label="Security PIN"
+            type="password"
+            inputMode="numeric"
+            value={approvalPIN}
+            onChange={onPINChange}
+            minLength={4}
+            maxLength={6}
+            required
+          />
+          <div className="flex items-end">
+            <SubmitButton disabled={isSubmitting}>Approve</SubmitButton>
+          </div>
+        </form>
+      ) : null}
     </article>
   );
 }

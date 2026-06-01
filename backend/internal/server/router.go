@@ -49,6 +49,7 @@ type ClaimRequestManager interface {
 	Create(ctx context.Context, input claimrequests.CreateInput) (claimrequests.ClaimRequest, error)
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]claimrequests.ClaimRequest, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (claimrequests.ClaimRequest, error)
+	Approve(ctx context.Context, input claimrequests.ApproveInput) (claimrequests.ApprovalResult, error)
 }
 
 func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager) http.Handler {
@@ -223,6 +224,10 @@ type createClaimRequestRequest struct {
 	DurationDays     int      `json:"duration_days"`
 }
 
+type approveClaimRequestRequest struct {
+	SecurityPIN string `json:"security_pin"`
+}
+
 func evidenceItemsHandler(evidenceManager EvidenceManager, authenticator Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := authenticateRequest(w, r, authenticator)
@@ -352,6 +357,12 @@ func claimRequestsHandler(claimRequestManager ClaimRequestManager, authenticator
 
 func claimRequestByIDHandler(claimRequestManager ClaimRequestManager, authenticator Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/claim-requests/")
+		if strings.HasSuffix(path, "/approve") {
+			approveClaimRequest(w, r, strings.TrimSuffix(path, "/approve"), claimRequestManager, authenticator)
+			return
+		}
+
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -362,7 +373,7 @@ func claimRequestByIDHandler(claimRequestManager ClaimRequestManager, authentica
 			return
 		}
 
-		requestID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/api/claim-requests/"))
+		requestID, err := uuid.Parse(path)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "claim_request_not_found", "Claim request was not found.")
 			return
@@ -376,6 +387,46 @@ func claimRequestByIDHandler(claimRequestManager ClaimRequestManager, authentica
 
 		writeJSON(w, http.StatusOK, claimRequest)
 	}
+}
+
+func approveClaimRequest(w http.ResponseWriter, r *http.Request, requestIDValue string, claimRequestManager ClaimRequestManager, authenticator Authenticator) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := authenticateRequest(w, r, authenticator)
+	if !ok {
+		return
+	}
+
+	requestID, err := uuid.Parse(requestIDValue)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "claim_request_not_found", "Claim request was not found.")
+		return
+	}
+
+	var request approveClaimRequestRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+		return
+	}
+
+	result, err := claimRequestManager.Approve(r.Context(), claimrequests.ApproveInput{
+		UserID:      userID,
+		RequestID:   requestID,
+		SecurityPIN: request.SecurityPIN,
+		IPAddress:   readRequestIP(r),
+		UserAgent:   r.UserAgent(),
+	})
+	if err != nil {
+		writeApproveClaimRequestError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func writeCreateUserError(w http.ResponseWriter, err error) {
@@ -466,6 +517,37 @@ func writeGetClaimRequestError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load claim request.")
 	}
+}
+
+func writeApproveClaimRequestError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claimrequests.ErrClaimRequestNotFound):
+		writeError(w, http.StatusNotFound, "claim_request_not_found", "Claim request was not found.")
+	case errors.Is(err, claimrequests.ErrInvalidSecurityPIN), errors.Is(err, securitypin.ErrInvalidFormat):
+		writeError(w, http.StatusBadRequest, "invalid_security_pin", "Security PIN must be 4-6 digits.")
+	case errors.Is(err, securitypin.ErrPINNotSet):
+		writeError(w, http.StatusBadRequest, "security_pin_not_set", "Set your Security PIN before approving requests.")
+	case errors.Is(err, securitypin.ErrInvalidPIN):
+		writeError(w, http.StatusUnauthorized, "invalid_security_pin", "Security PIN is incorrect.")
+	case errors.Is(err, securitypin.ErrPINLocked):
+		writeError(w, http.StatusTooManyRequests, "security_pin_locked", "Security PIN approvals are temporarily locked.")
+	case errors.Is(err, claimrequests.ErrClaimRequestExpired):
+		writeError(w, http.StatusConflict, "claim_request_expired", "This request has expired.")
+	case errors.Is(err, claimrequests.ErrClaimRequestNotOpen):
+		writeError(w, http.StatusConflict, "claim_request_not_pending", "This request is no longer pending approval.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to approve claim request.")
+	}
+}
+
+func readRequestIP(r *http.Request) string {
+	forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if forwardedFor != "" {
+		parts := strings.Split(forwardedFor, ",")
+		return strings.TrimSpace(parts[0])
+	}
+
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func authenticateRequest(w http.ResponseWriter, r *http.Request, authenticator Authenticator) (uuid.UUID, bool) {

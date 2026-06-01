@@ -34,6 +34,7 @@ func main() {
 	userService := users.NewService(userStore)
 	pinStore := securitypin.NewPostgresStore(db)
 	pinService := securitypin.NewSetupService(pinStore)
+	pinValidationService := securitypin.NewValidationService(pinStore)
 	authStore := auth.NewPostgresStore(db)
 	authService := auth.NewService(authStore, auth.NewTokenManager(cfg.JWTSecret, auth.DefaultTokenTTL))
 	evidenceStore := evidence.NewPostgresStore(db)
@@ -42,7 +43,7 @@ func main() {
 	truthStore := truths.NewPostgresStore(db)
 	truthService := truths.NewService(truthStore)
 	claimRequestStore := claimrequests.NewPostgresStore(db)
-	claimRequestService := claimrequests.NewService(claimRequestStore)
+	claimRequestService := claimrequests.NewService(claimRequestStore, pinValidationService)
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

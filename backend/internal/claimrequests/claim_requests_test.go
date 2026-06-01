@@ -6,15 +6,18 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type recordingStore struct {
-	record   CreateRecord
-	request  ClaimRequest
-	requests []ClaimRequest
-	err      error
+	record        CreateRecord
+	approveRecord ApproveRecord
+	request       ClaimRequest
+	requests      []ClaimRequest
+	approval      ApprovalResult
+	err           error
 }
 
 func (store *recordingStore) Create(ctx context.Context, record CreateRecord) (ClaimRequest, error) {
@@ -47,6 +50,41 @@ func (store *recordingStore) GetForUser(ctx context.Context, userID uuid.UUID, r
 		return ClaimRequest{}, store.err
 	}
 	return store.request, nil
+}
+
+func (store *recordingStore) Approve(ctx context.Context, record ApproveRecord) (ApprovalResult, error) {
+	store.approveRecord = record
+	if store.err != nil {
+		return ApprovalResult{}, store.err
+	}
+	if store.approval.ClaimID != uuid.Nil {
+		return store.approval, nil
+	}
+
+	return ApprovalResult{
+		ConsentID: record.ConsentID,
+		ClaimID:   record.ClaimID,
+		ClaimRequest: ClaimRequest{
+			ID:              record.RequestID,
+			UserID:          record.UserID,
+			Status:          StatusApprovedWithPIN,
+			RequestedTruths: []string{"identity_verified"},
+			ExpiresAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+		},
+		ApprovedAt: record.ApprovedAt,
+	}, nil
+}
+
+type recordingPINValidator struct {
+	userID uuid.UUID
+	pin    string
+	err    error
+}
+
+func (validator *recordingPINValidator) Validate(ctx context.Context, userID uuid.UUID, pin string) error {
+	validator.userID = userID
+	validator.pin = pin
+	return validator.err
 }
 
 func TestServiceCreatePreparesPendingRequest(t *testing.T) {
@@ -153,6 +191,122 @@ func TestServiceCreateValidatesInput(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.err)
 			}
 		})
+	}
+}
+
+func TestServiceApproveValidatesPINBeforeApproving(t *testing.T) {
+	userID := uuid.New()
+	requestID := uuid.New()
+	pinValidator := &recordingPINValidator{}
+	store := &recordingStore{
+		request: ClaimRequest{
+			ID:              requestID,
+			Organization:    Organization{ID: uuid.New(), Name: "Acme Bank"},
+			UserID:          userID,
+			RequestedTruths: []string{"identity_verified"},
+			Status:          StatusPendingApproval,
+			ExpiresAt:       time.Now().UTC().Add(24 * time.Hour),
+		},
+	}
+	service := NewService(store, pinValidator)
+
+	result, err := service.Approve(context.Background(), ApproveInput{
+		UserID:      userID,
+		RequestID:   requestID,
+		SecurityPIN: "4829",
+		IPAddress:   "127.0.0.1",
+		UserAgent:   "test-agent",
+		SessionID:   "session-1",
+	})
+	if err != nil {
+		t.Fatalf("approve request: %v", err)
+	}
+
+	if pinValidator.userID != userID {
+		t.Fatalf("pin validator user = %s, want %s", pinValidator.userID, userID)
+	}
+	if pinValidator.pin != "4829" {
+		t.Fatalf("pin = %q, want 4829", pinValidator.pin)
+	}
+	if store.approveRecord.RequestID != requestID {
+		t.Fatalf("approve request id = %s, want %s", store.approveRecord.RequestID, requestID)
+	}
+	if store.approveRecord.ConsentID == uuid.Nil {
+		t.Fatal("expected consent id")
+	}
+	if store.approveRecord.ClaimID == uuid.Nil {
+		t.Fatal("expected claim id")
+	}
+	if result.ClaimRequest.Status != StatusApprovedWithPIN {
+		t.Fatalf("status = %q, want %q", result.ClaimRequest.Status, StatusApprovedWithPIN)
+	}
+}
+
+func TestServiceApproveStopsWhenPINValidationFails(t *testing.T) {
+	userID := uuid.New()
+	requestID := uuid.New()
+	pinErr := errors.New("bad pin")
+	pinValidator := &recordingPINValidator{err: pinErr}
+	store := &recordingStore{
+		request: ClaimRequest{
+			ID:        requestID,
+			UserID:    userID,
+			Status:    StatusPendingApproval,
+			ExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+		},
+	}
+	service := NewService(store, pinValidator)
+
+	_, err := service.Approve(context.Background(), ApproveInput{
+		UserID:      userID,
+		RequestID:   requestID,
+		SecurityPIN: "1111",
+	})
+	if !errors.Is(err, pinErr) {
+		t.Fatalf("error = %v, want %v", err, pinErr)
+	}
+	if store.approveRecord.RequestID != uuid.Nil {
+		t.Fatal("request was approved after failed pin validation")
+	}
+}
+
+func TestServiceApproveRequiresPendingRequest(t *testing.T) {
+	service := NewService(&recordingStore{
+		request: ClaimRequest{
+			ID:        uuid.New(),
+			UserID:    uuid.New(),
+			Status:    StatusApprovedWithPIN,
+			ExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+		},
+	}, &recordingPINValidator{})
+
+	_, err := service.Approve(context.Background(), ApproveInput{
+		UserID:      uuid.New(),
+		RequestID:   uuid.New(),
+		SecurityPIN: "4829",
+	})
+	if !errors.Is(err, ErrClaimRequestNotOpen) {
+		t.Fatalf("error = %v, want %v", err, ErrClaimRequestNotOpen)
+	}
+}
+
+func TestServiceApproveRejectsExpiredRequest(t *testing.T) {
+	service := NewService(&recordingStore{
+		request: ClaimRequest{
+			ID:        uuid.New(),
+			UserID:    uuid.New(),
+			Status:    StatusPendingApproval,
+			ExpiresAt: time.Now().UTC().Add(-time.Hour),
+		},
+	}, &recordingPINValidator{})
+
+	_, err := service.Approve(context.Background(), ApproveInput{
+		UserID:      uuid.New(),
+		RequestID:   uuid.New(),
+		SecurityPIN: "4829",
+	})
+	if !errors.Is(err, ErrClaimRequestExpired) {
+		t.Fatalf("error = %v, want %v", err, ErrClaimRequestExpired)
 	}
 }
 
