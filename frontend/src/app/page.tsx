@@ -68,6 +68,28 @@ type ApprovalResponse = {
   approved_at: string;
 };
 
+type Claim = {
+  id: string;
+  claim_request_id: string;
+  organization: {
+    id: string;
+    name: string;
+    organization_type: string;
+    verification_status: string;
+  };
+  purpose: string;
+  approved_truths?: string[];
+  status: string;
+  issued_at: string;
+  expires_at: string;
+  revoked_at?: string;
+  details_visible: boolean;
+};
+
+type ClaimListResponse = {
+  items: Claim[];
+};
+
 type ProofPreview = {
   title: string;
   description: string;
@@ -137,6 +159,7 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
   const [claimRequests, setClaimRequests] = useState<ClaimRequest[]>([]);
+  const [claims, setClaims] = useState<Claim[]>([]);
   const [approvalPINs, setApprovalPINs] = useState<Record<string, string>>({});
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [notice, setNotice] = useState("");
@@ -149,6 +172,10 @@ export default function Home() {
       claimRequests.filter((request) => request.status === "pending_approval"),
     [claimRequests],
   );
+  const activeClaims = useMemo(
+    () => claims.filter((claim) => claim.status === "active"),
+    [claims],
+  );
 
   const statusCards = useMemo(
     () => [
@@ -157,12 +184,13 @@ export default function Home() {
         value: currentUser?.verification_status ?? "Not started",
       },
       { label: "Pending Requests", value: String(pendingClaimRequests.length) },
-      { label: "Active Proofs", value: "0" },
+      { label: "Active Proofs", value: String(activeClaims.length) },
       { label: "Recent Activity", value: evidenceItems.length > 0 ? "Records added" : "Ready" },
     ],
     [
       currentUser?.verification_status,
       pendingClaimRequests.length,
+      activeClaims.length,
       evidenceItems.length,
     ],
   );
@@ -180,12 +208,14 @@ export default function Home() {
       }),
       loadEvidenceItems(token),
       loadClaimRequests(token),
+      loadClaims(token),
     ])
-      .then(([user, evidence, requests]) => {
+      .then(([user, evidence, requests, loadedClaims]) => {
         if (!ignore) {
           setCurrentUser(user);
           setEvidenceItems(evidence);
           setClaimRequests(requests);
+          setClaims(loadedClaims);
         }
       })
       .catch(() => {
@@ -196,6 +226,7 @@ export default function Home() {
           setCurrentUser(null);
           setEvidenceItems([]);
           setClaimRequests([]);
+          setClaims([]);
           setApprovalPINs({});
         }
       });
@@ -337,6 +368,7 @@ export default function Home() {
           request.id === requestID ? result.claim_request : request,
         ),
       );
+      setClaims(await loadClaims(token));
       setApprovalPINs((pins) => ({ ...pins, [requestID]: "" }));
       setNotice("Request approved. A time-bound proof is now active.");
     } catch (err) {
@@ -364,6 +396,7 @@ export default function Home() {
     setCurrentUser(null);
     setEvidenceItems([]);
     setClaimRequests([]);
+    setClaims([]);
     setApprovalPINs({});
     setEvidenceForm(emptyEvidenceForm);
     clearAuthStorage();
@@ -480,6 +513,38 @@ export default function Home() {
                       value={formatDateTime(tokenExpiry)}
                     />
                   </dl>
+                </section>
+
+                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-500">
+                        Proofs
+                      </p>
+                      <h2 className="mt-1 text-xl font-semibold tracking-normal">
+                        Active proofs
+                      </h2>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
+                        These proofs are currently active. Expired or revoked
+                        proofs keep their history but hide proof details.
+                      </p>
+                    </div>
+                    <span className="w-fit rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                      {activeClaims.length} active
+                    </span>
+                  </div>
+
+                  <div className="mt-5 grid gap-3">
+                    {claims.length > 0 ? (
+                      claims.map((claim) => (
+                        <ClaimCard key={claim.id} claim={claim} />
+                      ))
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500">
+                        No active proofs yet.
+                      </div>
+                    )}
+                  </div>
                 </section>
 
                 <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -945,6 +1010,56 @@ function ClaimRequestCard({
   );
 }
 
+function ClaimCard({ claim }: { claim: Claim }) {
+  return (
+    <article className="rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-950">
+            {claim.organization.name}
+          </p>
+          <p className="mt-1 text-sm text-slate-500">{claim.purpose}</p>
+        </div>
+        <span className={claimStatusClass(claim.status)}>
+          {formatClaimStatus(claim.status)}
+        </span>
+      </div>
+
+      {claim.details_visible ? (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {(claim.approved_truths ?? []).map((truth) => (
+            <span
+              key={truth}
+              className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700"
+            >
+              {formatProofName(truth)}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-4 rounded-md bg-white px-3 py-2 text-sm font-medium text-slate-600">
+          Proof details are hidden for this {formatClaimStatus(claim.status).toLowerCase()} claim.
+        </p>
+      )}
+
+      <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+        <div>
+          <dt className="text-slate-500">Issued</dt>
+          <dd className="mt-1 font-medium text-slate-800">
+            {formatDateTime(claim.issued_at)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-slate-500">Expires</dt>
+          <dd className="mt-1 font-medium text-slate-800">
+            {formatDateTime(claim.expires_at)}
+          </dd>
+        </div>
+      </dl>
+    </article>
+  );
+}
+
 function ProofPreviewCard({ proof }: { proof: ProofPreview }) {
   return (
     <article className="min-h-40 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
@@ -1115,6 +1230,15 @@ async function loadClaimRequests(accessToken: string) {
   return response.items;
 }
 
+async function loadClaims(accessToken: string) {
+  const response = await apiRequest<ClaimListResponse>("/claims", {
+    method: "GET",
+    token: accessToken,
+  });
+
+  return response.items;
+}
+
 function parseJSON(text: string) {
   if (!text) {
     return null;
@@ -1208,6 +1332,35 @@ function formatRequestStatus(value: string) {
   }
 
   return formatCategory(value);
+}
+
+function formatClaimStatus(value: string) {
+  if (value === "active") {
+    return "Active";
+  }
+  if (value === "expired") {
+    return "Expired";
+  }
+  if (value === "revoked") {
+    return "Revoked";
+  }
+
+  return formatCategory(value);
+}
+
+function claimStatusClass(value: string) {
+  const base = "w-fit rounded-md px-2.5 py-1 text-xs font-semibold";
+  if (value === "active") {
+    return `${base} bg-emerald-50 text-emerald-800`;
+  }
+  if (value === "expired") {
+    return `${base} bg-slate-100 text-slate-700`;
+  }
+  if (value === "revoked") {
+    return `${base} bg-red-50 text-red-800`;
+  }
+
+  return `${base} bg-amber-50 text-amber-800`;
 }
 
 function proofAccentClass(accent: ProofPreview["accent"]) {

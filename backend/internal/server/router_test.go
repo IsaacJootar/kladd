@@ -14,6 +14,7 @@ import (
 
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
+	"github.com/IsaacJootar/kladd/backend/internal/claims"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
@@ -171,6 +172,31 @@ func (manager *fakeClaimRequestManager) Approve(ctx context.Context, input claim
 	return manager.approval, nil
 }
 
+type fakeClaimManager struct {
+	claim  claims.Claim
+	claims []claims.Claim
+	err    error
+	userID uuid.UUID
+	getID  uuid.UUID
+}
+
+func (manager *fakeClaimManager) ListForUser(ctx context.Context, userID uuid.UUID) ([]claims.Claim, error) {
+	manager.userID = userID
+	if manager.err != nil {
+		return nil, manager.err
+	}
+	return manager.claims, nil
+}
+
+func (manager *fakeClaimManager) GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error) {
+	manager.userID = userID
+	manager.getID = claimID
+	if manager.err != nil {
+		return claims.Claim{}, manager.err
+	}
+	return manager.claim, nil
+}
+
 func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator, evidenceManagers ...*fakeEvidenceManager) http.Handler {
 	if userCreator == nil {
 		userCreator = &fakeUserCreator{}
@@ -189,7 +215,7 @@ func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pin
 		evidenceManager = evidenceManagers[0]
 	}
 
-	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, authenticator, evidenceManager, &fakeTruthDefinitionLister{}, &fakeClaimRequestManager{})
+	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, authenticator, evidenceManager, &fakeTruthDefinitionLister{}, &fakeClaimRequestManager{}, &fakeClaimManager{})
 }
 
 func TestCreateUserHandlerCreatesUser(t *testing.T) {
@@ -808,6 +834,7 @@ func TestTruthDefinitionsHandlerListsDefinitionMetadata(t *testing.T) {
 		&fakeEvidenceManager{},
 		lister,
 		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
 	)
 
 	request := httptest.NewRequest(http.MethodGet, "/api/truth-definitions", nil)
@@ -842,6 +869,7 @@ func TestTruthDefinitionsHandlerRequiresBearerToken(t *testing.T) {
 		&fakeEvidenceManager{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
 	)
 	request := httptest.NewRequest(http.MethodGet, "/api/truth-definitions", nil)
 	response := httptest.NewRecorder()
@@ -863,6 +891,7 @@ func TestTruthDefinitionsHandlerMapsErrors(t *testing.T) {
 		&fakeEvidenceManager{},
 		&fakeTruthDefinitionLister{err: errors.New("boom")},
 		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
 	)
 	request := httptest.NewRequest(http.MethodGet, "/api/truth-definitions", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
@@ -885,6 +914,7 @@ func TestTruthDefinitionsHandlerRequiresGet(t *testing.T) {
 		&fakeEvidenceManager{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
 	)
 	request := httptest.NewRequest(http.MethodPost, "/api/truth-definitions", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
@@ -926,6 +956,7 @@ func TestClaimRequestsHandlerListsPendingRequests(t *testing.T) {
 		&fakeEvidenceManager{},
 		&fakeTruthDefinitionLister{},
 		manager,
+		&fakeClaimManager{},
 	)
 
 	request := httptest.NewRequest(http.MethodGet, "/api/claim-requests", nil)
@@ -977,6 +1008,7 @@ func TestClaimRequestsHandlerCreatesPendingRequest(t *testing.T) {
 		&fakeEvidenceManager{},
 		&fakeTruthDefinitionLister{},
 		manager,
+		&fakeClaimManager{},
 	)
 
 	body := `{"organization_name":"Acme Bank","organization_type":"bank","purpose":"Employment onboarding","requested_truths":["identity_verified"],"duration_days":30}`
@@ -1024,6 +1056,7 @@ func TestClaimRequestByIDHandlerReturnsOwnedRequest(t *testing.T) {
 		&fakeEvidenceManager{},
 		&fakeTruthDefinitionLister{},
 		manager,
+		&fakeClaimManager{},
 	)
 
 	request := httptest.NewRequest(http.MethodGet, "/api/claim-requests/"+requestID.String(), nil)
@@ -1074,6 +1107,7 @@ func TestClaimRequestApproveHandlerApprovesWithSecurityPIN(t *testing.T) {
 		&fakeEvidenceManager{},
 		&fakeTruthDefinitionLister{},
 		manager,
+		&fakeClaimManager{},
 	)
 
 	request := httptest.NewRequest(http.MethodPost, "/api/claim-requests/"+requestID.String()+"/approve", strings.NewReader(`{"security_pin":"4829"}`))
@@ -1133,6 +1167,7 @@ func TestClaimRequestApproveHandlerMapsErrors(t *testing.T) {
 				&fakeEvidenceManager{},
 				&fakeTruthDefinitionLister{},
 				&fakeClaimRequestManager{err: test.err},
+				&fakeClaimManager{},
 			)
 			request := httptest.NewRequest(http.MethodPost, "/api/claim-requests/"+uuid.New().String()+"/approve", strings.NewReader(`{"security_pin":"4829"}`))
 			request.Header.Set("Authorization", "Bearer test-token")
@@ -1196,6 +1231,7 @@ func TestClaimRequestsHandlerMapsCreateErrors(t *testing.T) {
 				&fakeEvidenceManager{},
 				&fakeTruthDefinitionLister{},
 				&fakeClaimRequestManager{err: test.err},
+				&fakeClaimManager{},
 			)
 			body := `{"organization_name":"Acme Bank","purpose":"Employment onboarding","requested_truths":["identity_verified"],"duration_days":30}`
 			request := httptest.NewRequest(http.MethodPost, "/api/claim-requests", strings.NewReader(body))
@@ -1221,6 +1257,133 @@ func TestClaimRequestsHandlerRequiresKnownMethod(t *testing.T) {
 
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestClaimsHandlerListsUserClaims(t *testing.T) {
+	userID := uuid.New()
+	manager := &fakeClaimManager{
+		claims: []claims.Claim{
+			{
+				ID:             uuid.New(),
+				ClaimRequestID: uuid.New(),
+				Organization:   claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank", OrganizationType: "bank"},
+				Purpose:        "Employment onboarding",
+				ApprovedTruths: []string{"identity_verified"},
+				Status:         claims.StatusActive,
+				IssuedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+				ExpiresAt:      time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+				DetailsVisible: true,
+			},
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: userID},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/claims", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.userID != userID {
+		t.Fatalf("user id = %s, want %s", manager.userID, userID)
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{"raw_document", "file_path", "security_pin", "security_pin_hash", "truth_value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestClaimByIDHandlerReturnsUserClaim(t *testing.T) {
+	userID := uuid.New()
+	claimID := uuid.New()
+	manager := &fakeClaimManager{
+		claim: claims.Claim{
+			ID:             claimID,
+			ClaimRequestID: uuid.New(),
+			Organization:   claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank", OrganizationType: "bank"},
+			Purpose:        "Employment onboarding",
+			ApprovedTruths: []string{"identity_verified"},
+			Status:         claims.StatusActive,
+			IssuedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			ExpiresAt:      time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+			DetailsVisible: true,
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: userID},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/claims/"+claimID.String(), nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.getID != claimID {
+		t.Fatalf("claim id = %s, want %s", manager.getID, claimID)
+	}
+}
+
+func TestClaimsHandlerRequiresBearerToken(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/claims", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestClaimByIDHandlerMapsNotFound(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{err: claims.ErrClaimNotFound},
+	)
+	request := httptest.NewRequest(http.MethodGet, "/api/claims/"+uuid.New().String(), nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 	}
 }
 

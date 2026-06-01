@@ -9,6 +9,7 @@ import (
 
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
+	"github.com/IsaacJootar/kladd/backend/internal/claims"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
@@ -52,7 +53,12 @@ type ClaimRequestManager interface {
 	Approve(ctx context.Context, input claimrequests.ApproveInput) (claimrequests.ApprovalResult, error)
 }
 
-func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager) http.Handler {
+type ClaimManager interface {
+	ListForUser(ctx context.Context, userID uuid.UUID) ([]claims.Claim, error)
+	GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
+}
+
+func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
@@ -63,6 +69,8 @@ func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter
 	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator))
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
 	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
+	mux.HandleFunc("/api/claims", claimsHandler(claimManager, authenticator))
+	mux.HandleFunc("/api/claims/", claimByIDHandler(claimManager, authenticator))
 
 	return mux
 }
@@ -429,6 +437,58 @@ func approveClaimRequest(w http.ResponseWriter, r *http.Request, requestIDValue 
 	writeJSON(w, http.StatusOK, result)
 }
 
+func claimsHandler(claimManager ClaimManager, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, ok := authenticateRequest(w, r, authenticator)
+		if !ok {
+			return
+		}
+
+		claimList, err := claimManager.ListForUser(r.Context(), userID)
+		if err != nil {
+			writeListClaimsError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string][]claims.Claim{
+			"items": claimList,
+		})
+	}
+}
+
+func claimByIDHandler(claimManager ClaimManager, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, ok := authenticateRequest(w, r, authenticator)
+		if !ok {
+			return
+		}
+
+		claimID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/api/claims/"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
+			return
+		}
+
+		claim, err := claimManager.GetForUser(r.Context(), userID, claimID)
+		if err != nil {
+			writeGetClaimError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, claim)
+	}
+}
+
 func writeCreateUserError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, users.ErrInvalidName):
@@ -537,6 +597,24 @@ func writeApproveClaimRequestError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "claim_request_not_pending", "This request is no longer pending approval.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to approve claim request.")
+	}
+}
+
+func writeListClaimsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claims.ErrInvalidUser):
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load claims.")
+	}
+}
+
+func writeGetClaimError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claims.ErrClaimNotFound):
+		writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load claim.")
 	}
 }
 
