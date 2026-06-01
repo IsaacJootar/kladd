@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
+	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/database"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
@@ -40,10 +41,12 @@ func main() {
 	evidenceService := evidence.NewService(evidenceStore, evidenceStorage)
 	truthStore := truths.NewPostgresStore(db)
 	truthService := truths.NewService(truthStore)
+	claimRequestStore := claimrequests.NewPostgresStore(db)
+	claimRequestService := claimrequests.NewService(claimRequestStore)
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService, userService, pinService, authService, evidenceService, truthService),
+		Handler:           server.NewRouter(cfg, userService, userService, pinService, authService, evidenceService, truthService, claimRequestService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

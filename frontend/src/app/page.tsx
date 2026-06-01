@@ -42,6 +42,25 @@ type EvidenceListResponse = {
   items: EvidenceItem[];
 };
 
+type ClaimRequest = {
+  id: string;
+  organization: {
+    id: string;
+    name: string;
+    organization_type: string;
+    verification_status: string;
+  };
+  purpose: string;
+  requested_truths: string[];
+  status: string;
+  expires_at: string;
+  created_at: string;
+};
+
+type ClaimRequestListResponse = {
+  items: ClaimRequest[];
+};
+
 type ProofPreview = {
   title: string;
   description: string;
@@ -110,6 +129,7 @@ export default function Home() {
   );
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
+  const [claimRequests, setClaimRequests] = useState<ClaimRequest[]>([]);
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -123,12 +143,13 @@ export default function Home() {
         label: "Identity Status",
         value: currentUser?.verification_status ?? "Not started",
       },
-      { label: "Pending Requests", value: "0" },
+      { label: "Pending Requests", value: String(claimRequests.length) },
       { label: "Active Proofs", value: "0" },
       { label: "Recent Activity", value: evidenceItems.length > 0 ? "Records added" : "Ready" },
     ],
     [
       currentUser?.verification_status,
+      claimRequests.length,
       evidenceItems.length,
     ],
   );
@@ -145,11 +166,13 @@ export default function Home() {
         token,
       }),
       loadEvidenceItems(token),
+      loadClaimRequests(token),
     ])
-      .then(([user, evidence]) => {
+      .then(([user, evidence, requests]) => {
         if (!ignore) {
           setCurrentUser(user);
           setEvidenceItems(evidence);
+          setClaimRequests(requests);
         }
       })
       .catch(() => {
@@ -159,6 +182,7 @@ export default function Home() {
           setTokenExpiry("");
           setCurrentUser(null);
           setEvidenceItems([]);
+          setClaimRequests([]);
         }
       });
 
@@ -288,6 +312,7 @@ export default function Home() {
     setTokenExpiry("");
     setCurrentUser(null);
     setEvidenceItems([]);
+    setClaimRequests([]);
     setEvidenceForm(emptyEvidenceForm);
     clearAuthStorage();
     setNotice("Signed out.");
@@ -403,6 +428,38 @@ export default function Home() {
                       value={formatDateTime(tokenExpiry)}
                     />
                   </dl>
+                </section>
+
+                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-500">
+                        Requests
+                      </p>
+                      <h2 className="mt-1 text-xl font-semibold tracking-normal">
+                        Pending proof requests
+                      </h2>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
+                        Review who is asking, what they need, and why before
+                        anything is approved.
+                      </p>
+                    </div>
+                    <span className="w-fit rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                      {claimRequests.length} pending
+                    </span>
+                  </div>
+
+                  <div className="mt-5 grid gap-3">
+                    {claimRequests.length > 0 ? (
+                      claimRequests.map((request) => (
+                        <ClaimRequestCard key={request.id} request={request} />
+                      ))
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500">
+                        No pending requests.
+                      </div>
+                    )}
+                  </div>
                 </section>
 
                 <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -743,6 +800,50 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
   );
 }
 
+function ClaimRequestCard({ request }: { request: ClaimRequest }) {
+  return (
+    <article className="rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-950">
+            {request.organization.name}
+          </p>
+          <p className="mt-1 text-sm text-slate-500">{request.purpose}</p>
+        </div>
+        <span className="w-fit rounded-md bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800">
+          {formatRequestStatus(request.status)}
+        </span>
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {request.requested_truths.map((truth) => (
+          <span
+            key={truth}
+            className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700"
+          >
+            {formatProofName(truth)}
+          </span>
+        ))}
+      </div>
+
+      <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+        <div>
+          <dt className="text-slate-500">Requested</dt>
+          <dd className="mt-1 font-medium text-slate-800">
+            {formatDateTime(request.created_at)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-slate-500">Valid until</dt>
+          <dd className="mt-1 font-medium text-slate-800">
+            {formatDateTime(request.expires_at)}
+          </dd>
+        </div>
+      </dl>
+    </article>
+  );
+}
+
 function ProofPreviewCard({ proof }: { proof: ProofPreview }) {
   return (
     <article className="min-h-40 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
@@ -901,6 +1002,18 @@ async function loadEvidenceItems(accessToken: string) {
   return response.items;
 }
 
+async function loadClaimRequests(accessToken: string) {
+  const response = await apiRequest<ClaimRequestListResponse>(
+    "/claim-requests",
+    {
+      method: "GET",
+      token: accessToken,
+    },
+  );
+
+  return response.items;
+}
+
 function parseJSON(text: string) {
   if (!text) {
     return null;
@@ -952,6 +1065,19 @@ function formatCategory(value: string) {
   return value.replaceAll("_", " ");
 }
 
+function formatProofName(value: string) {
+  const labels: Record<string, string> = {
+    identity_verified: "Identity proof",
+    age_over_18: "Age check",
+    address_verified: "Address proof",
+    degree_verified: "Education proof",
+    business_registered: "Business proof",
+    license_active: "License proof",
+  };
+
+  return labels[value] ?? formatCategory(value);
+}
+
 function formatRecordStatus(value: string) {
   if (value === "uploaded") {
     return "Added";
@@ -961,6 +1087,23 @@ function formatRecordStatus(value: string) {
   }
   if (value === "rejected") {
     return "Needs review";
+  }
+
+  return formatCategory(value);
+}
+
+function formatRequestStatus(value: string) {
+  if (value === "pending_approval") {
+    return "Waiting for review";
+  }
+  if (value === "approved") {
+    return "Approved";
+  }
+  if (value === "denied") {
+    return "Denied";
+  }
+  if (value === "expired") {
+    return "Expired";
   }
 
   return formatCategory(value);

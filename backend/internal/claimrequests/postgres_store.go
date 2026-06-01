@@ -1,0 +1,251 @@
+package claimrequests
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+
+	"github.com/google/uuid"
+)
+
+type PostgresStore struct {
+	db *sql.DB
+}
+
+func NewPostgresStore(db *sql.DB) PostgresStore {
+	return PostgresStore{db: db}
+}
+
+func (store PostgresStore) Create(ctx context.Context, record CreateRecord) (ClaimRequest, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	organization, err := upsertOrganization(ctx, tx, record)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+	record.OrganizationID = organization.ID
+
+	request, err := insertClaimRequest(ctx, tx, record)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+
+	if err := insertClaimRequestCreatedAudit(ctx, tx, request); err != nil {
+		return ClaimRequest{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ClaimRequest{}, err
+	}
+
+	return request, nil
+}
+
+func (store PostgresStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]ClaimRequest, error) {
+	rows, err := store.db.QueryContext(ctx, claimRequestSelectQuery()+`
+WHERE cr.user_id = $1
+ORDER BY cr.created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	requests := []ClaimRequest{}
+	for rows.Next() {
+		request, err := scanClaimRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return requests, nil
+}
+
+func (store PostgresStore) GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (ClaimRequest, error) {
+	request, err := scanClaimRequest(store.db.QueryRowContext(ctx, claimRequestSelectQuery()+`
+WHERE cr.user_id = $1 AND cr.id = $2`,
+		userID,
+		requestID,
+	))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ClaimRequest{}, ErrClaimRequestNotFound
+		}
+		return ClaimRequest{}, err
+	}
+
+	return request, nil
+}
+
+func upsertOrganization(ctx context.Context, tx *sql.Tx, record CreateRecord) (Organization, error) {
+	var organization Organization
+	err := tx.QueryRowContext(ctx, `
+INSERT INTO organizations (
+    id,
+    name,
+    organization_type
+) VALUES ($1, $2, $3)
+ON CONFLICT (name) DO UPDATE
+SET organization_type = EXCLUDED.organization_type
+RETURNING id, name, organization_type, verification_status`,
+		record.OrganizationID,
+		record.OrganizationName,
+		record.OrganizationType,
+	).Scan(
+		&organization.ID,
+		&organization.Name,
+		&organization.OrganizationType,
+		&organization.VerificationStatus,
+	)
+	if err != nil {
+		return Organization{}, err
+	}
+
+	return organization, nil
+}
+
+func insertClaimRequest(ctx context.Context, tx *sql.Tx, record CreateRecord) (ClaimRequest, error) {
+	scope, err := json.Marshal(record.Scope)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+
+	request, err := scanClaimRequest(tx.QueryRowContext(ctx, `
+WITH inserted AS (
+    INSERT INTO claim_requests (
+        id,
+        organization_id,
+        user_id,
+        purpose,
+        scope_json,
+        status,
+        expires_at
+    ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+    RETURNING id
+)
+SELECT
+    cr.id,
+    cr.user_id,
+    cr.purpose,
+    cr.scope_json,
+    cr.status,
+    cr.expires_at,
+    cr.created_at,
+    org.id,
+    org.name,
+    org.organization_type,
+    org.verification_status
+FROM claim_requests cr
+JOIN inserted ON inserted.id = cr.id
+JOIN organizations org ON org.id = cr.organization_id`,
+		record.ID,
+		record.OrganizationID,
+		record.UserID,
+		record.Purpose,
+		string(scope),
+		record.Status,
+		record.ExpiresAt,
+	))
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+
+	return request, nil
+}
+
+func insertClaimRequestCreatedAudit(ctx context.Context, tx *sql.Tx, request ClaimRequest) error {
+	metadata, err := json.Marshal(map[string]any{
+		"claim_request_id": request.ID.String(),
+		"user_id":          request.UserID.String(),
+		"requested_truths": request.RequestedTruths,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"organization",
+		request.Organization.ID,
+		"claim_request.created",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert claim request created audit: %w", err)
+	}
+
+	return nil
+}
+
+func claimRequestSelectQuery() string {
+	return `
+SELECT
+    cr.id,
+    cr.user_id,
+    cr.purpose,
+    cr.scope_json,
+    cr.status,
+    cr.expires_at,
+    cr.created_at,
+    org.id,
+    org.name,
+    org.organization_type,
+    org.verification_status
+FROM claim_requests cr
+JOIN organizations org ON org.id = cr.organization_id
+`
+}
+
+type claimRequestScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanClaimRequest(scanner claimRequestScanner) (ClaimRequest, error) {
+	var request ClaimRequest
+	var scopeBytes []byte
+	err := scanner.Scan(
+		&request.ID,
+		&request.UserID,
+		&request.Purpose,
+		&scopeBytes,
+		&request.Status,
+		&request.ExpiresAt,
+		&request.CreatedAt,
+		&request.Organization.ID,
+		&request.Organization.Name,
+		&request.Organization.OrganizationType,
+		&request.Organization.VerificationStatus,
+	)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+
+	var scope Scope
+	if err := json.Unmarshal(scopeBytes, &scope); err != nil {
+		return ClaimRequest{}, err
+	}
+	request.RequestedTruths = scope.RequestedTruths
+
+	return request, nil
+}

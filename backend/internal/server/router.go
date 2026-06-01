@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
+	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
@@ -44,7 +45,13 @@ type TruthDefinitionLister interface {
 	ListDefinitions(ctx context.Context) ([]truths.Definition, error)
 }
 
-func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister) http.Handler {
+type ClaimRequestManager interface {
+	Create(ctx context.Context, input claimrequests.CreateInput) (claimrequests.ClaimRequest, error)
+	ListForUser(ctx context.Context, userID uuid.UUID) ([]claimrequests.ClaimRequest, error)
+	GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (claimrequests.ClaimRequest, error)
+}
+
+func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
@@ -53,6 +60,8 @@ func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter
 	mux.HandleFunc("/api/account/security-pin", setupSecurityPINHandler(pinSetter, authenticator))
 	mux.HandleFunc("/api/evidence-items", evidenceItemsHandler(evidenceManager, authenticator))
 	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator))
+	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
+	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
 
 	return mux
 }
@@ -206,6 +215,14 @@ type setupSecurityPINRequest struct {
 	SecurityPIN string `json:"security_pin"`
 }
 
+type createClaimRequestRequest struct {
+	OrganizationName string   `json:"organization_name"`
+	OrganizationType string   `json:"organization_type"`
+	Purpose          string   `json:"purpose"`
+	RequestedTruths  []string `json:"requested_truths"`
+	DurationDays     int      `json:"duration_days"`
+}
+
 func evidenceItemsHandler(evidenceManager EvidenceManager, authenticator Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := authenticateRequest(w, r, authenticator)
@@ -286,6 +303,81 @@ func truthDefinitionsHandler(truthDefinitionLister TruthDefinitionLister, authen
 	}
 }
 
+func claimRequestsHandler(claimRequestManager ClaimRequestManager, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := authenticateRequest(w, r, authenticator)
+		if !ok {
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			requests, err := claimRequestManager.ListForUser(r.Context(), userID)
+			if err != nil {
+				writeListClaimRequestsError(w, err)
+				return
+			}
+
+			writeJSON(w, http.StatusOK, map[string][]claimrequests.ClaimRequest{
+				"items": requests,
+			})
+		case http.MethodPost:
+			var request createClaimRequestRequest
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&request); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+				return
+			}
+
+			claimRequest, err := claimRequestManager.Create(r.Context(), claimrequests.CreateInput{
+				UserID:           userID,
+				OrganizationName: request.OrganizationName,
+				OrganizationType: request.OrganizationType,
+				Purpose:          request.Purpose,
+				RequestedTruths:  request.RequestedTruths,
+				DurationDays:     request.DurationDays,
+			})
+			if err != nil {
+				writeCreateClaimRequestError(w, err)
+				return
+			}
+
+			writeJSON(w, http.StatusCreated, claimRequest)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func claimRequestByIDHandler(claimRequestManager ClaimRequestManager, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, ok := authenticateRequest(w, r, authenticator)
+		if !ok {
+			return
+		}
+
+		requestID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/api/claim-requests/"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, "claim_request_not_found", "Claim request was not found.")
+			return
+		}
+
+		claimRequest, err := claimRequestManager.GetForUser(r.Context(), userID, requestID)
+		if err != nil {
+			writeGetClaimRequestError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, claimRequest)
+	}
+}
+
 func writeCreateUserError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, users.ErrInvalidName):
@@ -340,6 +432,39 @@ func writeCreateEvidenceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_file", "Evidence file is required.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to save evidence record.")
+	}
+}
+
+func writeCreateClaimRequestError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claimrequests.ErrInvalidOrganization):
+		writeError(w, http.StatusBadRequest, "invalid_organization", "Organization name is required.")
+	case errors.Is(err, claimrequests.ErrInvalidPurpose):
+		writeError(w, http.StatusBadRequest, "invalid_purpose", "Purpose is required.")
+	case errors.Is(err, claimrequests.ErrInvalidScope):
+		writeError(w, http.StatusBadRequest, "invalid_scope", "At least one requested proof is required.")
+	case errors.Is(err, claimrequests.ErrInvalidDuration):
+		writeError(w, http.StatusBadRequest, "invalid_duration", "Duration must be at least 1 day.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to create claim request.")
+	}
+}
+
+func writeListClaimRequestsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claimrequests.ErrInvalidUser):
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load claim requests.")
+	}
+}
+
+func writeGetClaimRequestError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claimrequests.ErrClaimRequestNotFound):
+		writeError(w, http.StatusNotFound, "claim_request_not_found", "Claim request was not found.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load claim request.")
 	}
 }
 
