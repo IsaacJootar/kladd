@@ -16,8 +16,9 @@ const (
 )
 
 var (
-	ErrInvalidUser   = errors.New("user_id is required")
-	ErrClaimNotFound = errors.New("claim not found")
+	ErrInvalidUser    = errors.New("user_id is required")
+	ErrClaimNotFound  = errors.New("claim not found")
+	ErrClaimNotActive = errors.New("claim is not active")
 )
 
 type Claim struct {
@@ -36,6 +37,7 @@ type Claim struct {
 type Store interface {
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]Claim, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (Claim, error)
+	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID, revokedAt time.Time) (Claim, error)
 }
 
 type Service struct {
@@ -79,6 +81,22 @@ func (service Service) GetForUser(ctx context.Context, userID uuid.UUID, claimID
 	}
 
 	claim, err := service.store.GetForUser(ctx, userID, claimID)
+	if err != nil {
+		return Claim{}, err
+	}
+
+	return service.sanitizeClaim(claim), nil
+}
+
+func (service Service) Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (Claim, error) {
+	if userID == uuid.Nil {
+		return Claim{}, ErrInvalidUser
+	}
+	if claimID == uuid.Nil {
+		return Claim{}, ErrClaimNotFound
+	}
+
+	claim, err := service.store.Revoke(ctx, userID, claimID, service.now())
 	if err != nil {
 		return Claim{}, err
 	}

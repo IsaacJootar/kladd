@@ -173,11 +173,12 @@ func (manager *fakeClaimRequestManager) Approve(ctx context.Context, input claim
 }
 
 type fakeClaimManager struct {
-	claim  claims.Claim
-	claims []claims.Claim
-	err    error
-	userID uuid.UUID
-	getID  uuid.UUID
+	claim    claims.Claim
+	claims   []claims.Claim
+	err      error
+	userID   uuid.UUID
+	getID    uuid.UUID
+	revokeID uuid.UUID
 }
 
 func (manager *fakeClaimManager) ListForUser(ctx context.Context, userID uuid.UUID) ([]claims.Claim, error) {
@@ -194,6 +195,18 @@ func (manager *fakeClaimManager) GetForUser(ctx context.Context, userID uuid.UUI
 	if manager.err != nil {
 		return claims.Claim{}, manager.err
 	}
+	return manager.claim, nil
+}
+
+func (manager *fakeClaimManager) Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error) {
+	manager.userID = userID
+	manager.revokeID = claimID
+	if manager.err != nil {
+		return claims.Claim{}, manager.err
+	}
+	manager.claim.Status = claims.StatusRevoked
+	manager.claim.DetailsVisible = false
+	manager.claim.ApprovedTruths = nil
 	return manager.claim, nil
 }
 
@@ -1384,6 +1397,105 @@ func TestClaimByIDHandlerMapsNotFound(t *testing.T) {
 
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestClaimRevokeHandlerRevokesClaim(t *testing.T) {
+	userID := uuid.New()
+	claimID := uuid.New()
+	manager := &fakeClaimManager{
+		claim: claims.Claim{
+			ID:             claimID,
+			ClaimRequestID: uuid.New(),
+			Organization:   claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank", OrganizationType: "bank"},
+			Purpose:        "Employment onboarding",
+			ApprovedTruths: []string{"identity_verified"},
+			Status:         claims.StatusActive,
+			IssuedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			ExpiresAt:      time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+			DetailsVisible: true,
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: userID},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/claims/"+claimID.String()+"/revoke", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.userID != userID {
+		t.Fatalf("user id = %s, want %s", manager.userID, userID)
+	}
+	if manager.revokeID != claimID {
+		t.Fatalf("claim id = %s, want %s", manager.revokeID, claimID)
+	}
+
+	body := response.Body.String()
+	if strings.Contains(body, "identity_verified") {
+		t.Fatal("revoked claim response exposed proof details")
+	}
+}
+
+func TestClaimRevokeHandlerMapsErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "not found", err: claims.ErrClaimNotFound, status: http.StatusNotFound},
+		{name: "not active", err: claims.ErrClaimNotActive, status: http.StatusConflict},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			router := NewRouter(
+				config.Config{},
+				&fakeUserCreator{},
+				&fakeUserGetter{},
+				&fakeSecurityPINSetter{},
+				&fakeAuthenticator{userID: uuid.New()},
+				&fakeEvidenceManager{},
+				&fakeTruthDefinitionLister{},
+				&fakeClaimRequestManager{},
+				&fakeClaimManager{err: test.err},
+			)
+			request := httptest.NewRequest(http.MethodPost, "/api/claims/"+uuid.New().String()+"/revoke", nil)
+			request.Header.Set("Authorization", "Bearer test-token")
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+		})
+	}
+}
+
+func TestClaimRevokeHandlerRequiresPost(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
+	request := httptest.NewRequest(http.MethodGet, "/api/claims/"+uuid.New().String()+"/revoke", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
 	}
 }
 

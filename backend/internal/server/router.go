@@ -56,6 +56,7 @@ type ClaimRequestManager interface {
 type ClaimManager interface {
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]claims.Claim, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
+	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
 }
 
 func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
@@ -463,6 +464,12 @@ func claimsHandler(claimManager ClaimManager, authenticator Authenticator) http.
 
 func claimByIDHandler(claimManager ClaimManager, authenticator Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/claims/")
+		if strings.HasSuffix(path, "/revoke") {
+			revokeClaim(w, r, strings.TrimSuffix(path, "/revoke"), claimManager, authenticator)
+			return
+		}
+
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -473,7 +480,7 @@ func claimByIDHandler(claimManager ClaimManager, authenticator Authenticator) ht
 			return
 		}
 
-		claimID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/api/claims/"))
+		claimID, err := uuid.Parse(path)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
 			return
@@ -487,6 +494,32 @@ func claimByIDHandler(claimManager ClaimManager, authenticator Authenticator) ht
 
 		writeJSON(w, http.StatusOK, claim)
 	}
+}
+
+func revokeClaim(w http.ResponseWriter, r *http.Request, claimIDValue string, claimManager ClaimManager, authenticator Authenticator) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := authenticateRequest(w, r, authenticator)
+	if !ok {
+		return
+	}
+
+	claimID, err := uuid.Parse(claimIDValue)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
+		return
+	}
+
+	claim, err := claimManager.Revoke(r.Context(), userID, claimID)
+	if err != nil {
+		writeRevokeClaimError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, claim)
 }
 
 func writeCreateUserError(w http.ResponseWriter, err error) {
@@ -615,6 +648,17 @@ func writeGetClaimError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load claim.")
+	}
+}
+
+func writeRevokeClaimError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claims.ErrClaimNotFound):
+		writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
+	case errors.Is(err, claims.ErrClaimNotActive):
+		writeError(w, http.StatusConflict, "claim_not_active", "Only active claims can be revoked.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to revoke claim.")
 	}
 }
 

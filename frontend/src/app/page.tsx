@@ -378,6 +378,34 @@ export default function Home() {
     }
   }
 
+  async function handleRevokeClaim(claimID: string) {
+    if (!token) {
+      setError("Please sign in before revoking a proof.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const revokedClaim = await apiRequest<Claim>(
+        `/claims/${claimID}/revoke`,
+        {
+          method: "POST",
+          token,
+        },
+      );
+      setClaims((items) =>
+        items.map((claim) => (claim.id === claimID ? revokedClaim : claim)),
+      );
+      setNotice("Proof revoked. Its proof details are now hidden.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function loginWith(email: string, password: string) {
     const login = await apiRequest<LoginResponse>("/auth/login", {
       method: "POST",
@@ -537,7 +565,12 @@ export default function Home() {
                   <div className="mt-5 grid gap-3">
                     {claims.length > 0 ? (
                       claims.map((claim) => (
-                        <ClaimCard key={claim.id} claim={claim} />
+                        <ClaimCard
+                          key={claim.id}
+                          claim={claim}
+                          isSubmitting={isSubmitting}
+                          onRevoke={() => handleRevokeClaim(claim.id)}
+                        />
                       ))
                     ) : (
                       <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500">
@@ -1010,7 +1043,17 @@ function ClaimRequestCard({
   );
 }
 
-function ClaimCard({ claim }: { claim: Claim }) {
+function ClaimCard({
+  claim,
+  isSubmitting,
+  onRevoke,
+}: {
+  claim: Claim;
+  isSubmitting: boolean;
+  onRevoke: () => void;
+}) {
+  const canRevoke = claim.status === "active";
+
   return (
     <article className="rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -1056,6 +1099,19 @@ function ClaimCard({ claim }: { claim: Claim }) {
           </dd>
         </div>
       </dl>
+
+      {canRevoke ? (
+        <div className="mt-4 border-t border-slate-200 pt-4">
+          <button
+            type="button"
+            onClick={onRevoke}
+            disabled={isSubmitting}
+            className="h-10 rounded-md border border-red-200 bg-white px-4 text-sm font-semibold text-red-700 shadow-sm transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
+          >
+            Revoke proof
+          </button>
+        </div>
+      ) : null}
     </article>
   );
 }
