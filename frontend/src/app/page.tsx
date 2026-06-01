@@ -97,7 +97,24 @@ type ProofPreview = {
   accent: "indigo" | "emerald" | "amber";
 };
 
+type TestRequestForm = {
+  organizationName: string;
+  organizationType: string;
+  purpose: string;
+  requestedTruths: string[];
+  durationDays: string;
+};
+
 const navItems = ["Home", "My Records", "Requests", "Proofs", "Security"];
+
+const proofOptions = [
+  { key: "identity_verified", label: "Identity proof" },
+  { key: "address_verified", label: "Address proof" },
+  { key: "degree_verified", label: "Education proof" },
+  { key: "business_registered", label: "Business proof" },
+  { key: "license_active", label: "License proof" },
+  { key: "age_over_18", label: "Age check" },
+];
 
 const proofPreviews: ProofPreview[] = [
   {
@@ -145,6 +162,14 @@ const emptyEvidenceForm = {
   file: null as File | null,
 };
 
+const emptyTestRequestForm: TestRequestForm = {
+  organizationName: "Acme Bank",
+  organizationType: "bank",
+  purpose: "Account opening",
+  requestedTruths: ["identity_verified"],
+  durationDays: "30",
+};
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("register");
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
@@ -162,6 +187,9 @@ export default function Home() {
   const [claims, setClaims] = useState<Claim[]>([]);
   const [approvalPINs, setApprovalPINs] = useState<Record<string, string>>({});
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
+  const [testRequestForm, setTestRequestForm] = useState(
+    emptyTestRequestForm,
+  );
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -340,6 +368,43 @@ export default function Home() {
     }
   }
 
+  async function handleCreateTestRequest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) {
+      setError("Please sign in before creating a test request.");
+      return;
+    }
+
+    if (testRequestForm.requestedTruths.length === 0) {
+      setError("Choose at least one proof for the request.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const request = await apiRequest<ClaimRequest>("/claim-requests", {
+        method: "POST",
+        token,
+        body: JSON.stringify({
+          organization_name: testRequestForm.organizationName,
+          organization_type: testRequestForm.organizationType,
+          purpose: testRequestForm.purpose,
+          requested_truths: testRequestForm.requestedTruths,
+          duration_days: Number(testRequestForm.durationDays),
+        }),
+      });
+      setClaimRequests((requests) => [request, ...requests]);
+      setTestRequestForm(emptyTestRequestForm);
+      setNotice("Test request created. You can approve it from Pending proof requests.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function handleApproveClaimRequest(
     event: FormEvent<HTMLFormElement>,
     requestID: string,
@@ -427,6 +492,7 @@ export default function Home() {
     setClaims([]);
     setApprovalPINs({});
     setEvidenceForm(emptyEvidenceForm);
+    setTestRequestForm(emptyTestRequestForm);
     clearAuthStorage();
     setNotice("Signed out.");
     setError("");
@@ -819,6 +885,101 @@ export default function Home() {
                 />
                 <SubmitButton disabled={!signedIn || isSubmitting}>
                   Set Security PIN
+                </SubmitButton>
+              </form>
+            </section>
+
+            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+              <div>
+                <p className="text-sm font-semibold text-slate-500">
+                  Requests
+                </p>
+                <h2 className="mt-1 text-lg font-semibold tracking-normal">
+                  Create test request
+                </h2>
+              </div>
+
+              <form className="mt-5 space-y-4" onSubmit={handleCreateTestRequest}>
+                <TextInput
+                  label="Requester"
+                  value={testRequestForm.organizationName}
+                  onChange={(value) =>
+                    setTestRequestForm((form) => ({
+                      ...form,
+                      organizationName: value,
+                    }))
+                  }
+                  disabled={!signedIn}
+                  required
+                />
+
+                <TextInput
+                  label="Purpose"
+                  value={testRequestForm.purpose}
+                  onChange={(value) =>
+                    setTestRequestForm((form) => ({ ...form, purpose: value }))
+                  }
+                  disabled={!signedIn}
+                  required
+                />
+
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">
+                    Duration
+                  </span>
+                  <select
+                    value={testRequestForm.durationDays}
+                    onChange={(event) =>
+                      setTestRequestForm((form) => ({
+                        ...form,
+                        durationDays: event.target.value,
+                      }))
+                    }
+                    disabled={!signedIn}
+                    className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                  >
+                    <option value="7">7 days</option>
+                    <option value="30">30 days</option>
+                    <option value="90">90 days</option>
+                    <option value="180">180 days</option>
+                  </select>
+                </label>
+
+                <fieldset disabled={!signedIn} className="space-y-2">
+                  <legend className="text-sm font-semibold text-slate-700">
+                    Proofs
+                  </legend>
+                  <div className="grid gap-2">
+                    {proofOptions.map((proof) => (
+                      <label
+                        key={proof.key}
+                        className="flex items-center gap-2 rounded-md border border-slate-200 bg-[#f9fbfd] px-3 py-2 text-sm font-medium text-slate-700"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={testRequestForm.requestedTruths.includes(
+                            proof.key,
+                          )}
+                          onChange={(event) =>
+                            setTestRequestForm((form) => ({
+                              ...form,
+                              requestedTruths: event.target.checked
+                                ? [...form.requestedTruths, proof.key]
+                                : form.requestedTruths.filter(
+                                    (truth) => truth !== proof.key,
+                                  ),
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-indigo-700 focus:ring-indigo-500"
+                        />
+                        {proof.label}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                <SubmitButton disabled={!signedIn || isSubmitting}>
+                  Create request
                 </SubmitButton>
               </form>
             </section>
