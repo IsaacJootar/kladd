@@ -209,6 +209,7 @@ export default function Home() {
   const [testRequestForm, setTestRequestForm] = useState(
     emptyTestRequestForm,
   );
+  const [copiedClaimID, setCopiedClaimID] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -568,6 +569,24 @@ export default function Home() {
     }
   }
 
+  async function handleCopyClaimLink(claimID: string) {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    clearMessages();
+
+    try {
+      const url = new URL(`/verify/${claimID}`, window.location.origin)
+        .toString();
+      await window.navigator.clipboard.writeText(url);
+      setCopiedClaimID(claimID);
+      setNotice("Verification link copied.");
+    } catch {
+      setError("Unable to copy verification link.");
+    }
+  }
+
   async function loginWith(email: string, password: string) {
     const login = await apiRequest<LoginResponse>("/auth/login", {
       method: "POST",
@@ -734,6 +753,8 @@ export default function Home() {
                           key={claim.id}
                           claim={claim}
                           isSubmitting={isSubmitting}
+                          copied={copiedClaimID === claim.id}
+                          onCopyLink={() => handleCopyClaimLink(claim.id)}
                           onRevoke={() => handleRevokeClaim(claim.id)}
                         />
                       ))
@@ -1386,10 +1407,14 @@ function ClaimRequestCard({
 function ClaimCard({
   claim,
   isSubmitting,
+  copied,
+  onCopyLink,
   onRevoke,
 }: {
   claim: Claim;
   isSubmitting: boolean;
+  copied: boolean;
+  onCopyLink: () => void;
   onRevoke: () => void;
 }) {
   const canRevoke = claim.status === "active";
@@ -1447,6 +1472,13 @@ function ClaimCard({
         >
           View verification
         </a>
+        <button
+          type="button"
+          onClick={onCopyLink}
+          className="h-10 rounded-md border border-indigo-200 bg-white px-4 text-sm font-semibold text-indigo-700 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50"
+        >
+          {copied ? "Copied" : "Copy link"}
+        </button>
         {canRevoke ? (
           <button
             type="button"
