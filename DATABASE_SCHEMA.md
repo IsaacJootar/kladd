@@ -80,6 +80,13 @@
 - expires_at
 - revoked_at
 
+### claim_exchange_pins
+- id
+- claim_id
+- pin_hash
+- expires_at
+- created_at
+
 ### claim_truths
 - id
 - claim_id

@@ -102,7 +102,7 @@ func (store PostgresStore) Revoke(ctx context.Context, userID uuid.UUID, claimID
 		_ = tx.Rollback()
 	}()
 
-	claim, err := lockClaimForRevoke(ctx, tx, userID, claimID)
+	claim, err := lockClaimForExchangePIN(ctx, tx, userID, claimID)
 	if err != nil {
 		return Claim{}, err
 	}
@@ -119,6 +119,99 @@ func (store PostgresStore) Revoke(ctx context.Context, userID uuid.UUID, claimID
 	}
 
 	if err := insertClaimRevokedAudit(ctx, tx, userID, claim); err != nil {
+		return Claim{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Claim{}, err
+	}
+
+	return claim, nil
+}
+
+func (store PostgresStore) CreateExchangePIN(ctx context.Context, userID uuid.UUID, claimID uuid.UUID, pinHash string, expiresAt time.Time, createdAt time.Time) (ExchangePIN, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ExchangePIN{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	claim, err := lockClaimForRevoke(ctx, tx, userID, claimID)
+	if err != nil {
+		return ExchangePIN{}, err
+	}
+	if claim.Status != StatusActive {
+		return ExchangePIN{}, ErrClaimNotActive
+	}
+	if !claim.ExpiresAt.After(createdAt) {
+		return ExchangePIN{}, ErrClaimNotActive
+	}
+	if expiresAt.After(claim.ExpiresAt) {
+		expiresAt = claim.ExpiresAt
+	}
+
+	exchangePIN := ExchangePIN{
+		ClaimID:   claim.ID,
+		ExpiresAt: expiresAt,
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO claim_exchange_pins (
+    id,
+    claim_id,
+    pin_hash,
+    expires_at,
+    created_at
+) VALUES ($1, $2, $3, $4, $5)`,
+		uuid.New(),
+		claim.ID,
+		pinHash,
+		expiresAt,
+		createdAt,
+	); err != nil {
+		return ExchangePIN{}, err
+	}
+
+	if err := insertExchangePINCreatedAudit(ctx, tx, userID, claim, expiresAt); err != nil {
+		return ExchangePIN{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ExchangePIN{}, err
+	}
+
+	return exchangePIN, nil
+}
+
+func (store PostgresStore) ResolveExchangePIN(ctx context.Context, pinHash string, retrievedAt time.Time) (Claim, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Claim{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	claim, err := scanClaim(tx.QueryRowContext(ctx, claimSelectQuery()+`
+JOIN claim_exchange_pins ep ON ep.claim_id = c.id
+WHERE ep.pin_hash = $1
+    AND ep.expires_at > $2
+    AND c.status = $3
+    AND c.expires_at > $2`,
+		pinHash,
+		retrievedAt,
+		StatusActive,
+	))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Claim{}, ErrExchangePINNotFound
+		}
+		return Claim{}, err
+	}
+
+	if err := insertExchangePINResolvedAudit(ctx, tx, claim, retrievedAt); err != nil {
 		return Claim{}, err
 	}
 
@@ -148,6 +241,23 @@ FROM claims c
 JOIN claim_requests cr ON cr.id = c.claim_request_id
 JOIN organizations org ON org.id = cr.organization_id
 `
+}
+
+func lockClaimForExchangePIN(ctx context.Context, tx *sql.Tx, userID uuid.UUID, claimID uuid.UUID) (Claim, error) {
+	claim, err := scanClaim(tx.QueryRowContext(ctx, claimSelectQuery()+`
+WHERE cr.user_id = $1 AND c.id = $2
+FOR UPDATE OF c`,
+		userID,
+		claimID,
+	))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Claim{}, ErrClaimNotFound
+		}
+		return Claim{}, err
+	}
+
+	return claim, nil
 }
 
 func lockClaimForRevoke(ctx context.Context, tx *sql.Tx, userID uuid.UUID, claimID uuid.UUID) (Claim, error) {
@@ -274,6 +384,68 @@ INSERT INTO audit_logs (
 	)
 	if err != nil {
 		return fmt.Errorf("insert claim status retrieved audit: %w", err)
+	}
+
+	return nil
+}
+
+func insertExchangePINCreatedAudit(ctx context.Context, tx *sql.Tx, userID uuid.UUID, claim Claim, expiresAt time.Time) error {
+	metadata, err := json.Marshal(map[string]string{
+		"claim_id":         claim.ID.String(),
+		"claim_request_id": claim.ClaimRequestID.String(),
+		"expires_at":       expiresAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"user",
+		userID,
+		"claim.exchange_pin_created",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert exchange pin created audit: %w", err)
+	}
+
+	return nil
+}
+
+func insertExchangePINResolvedAudit(ctx context.Context, tx *sql.Tx, claim Claim, retrievedAt time.Time) error {
+	metadata, err := json.Marshal(map[string]string{
+		"claim_id":         claim.ID.String(),
+		"claim_request_id": claim.ClaimRequestID.String(),
+		"retrieved_at":     retrievedAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"system",
+		nil,
+		"claim.exchange_pin_resolved",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert exchange pin resolved audit: %w", err)
 	}
 
 	return nil

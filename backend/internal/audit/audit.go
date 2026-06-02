@@ -97,6 +97,10 @@ func eventCopy(eventType string, metadata map[string]any) (string, string) {
 		return "Proof request denied", "A proof request was denied. No proof was released."
 	case "claim.revoked":
 		return "Proof revoked", "An active proof was revoked and its proof details are hidden."
+	case "claim.exchange_pin_created":
+		return "Exchange PIN created", "A temporary verification PIN was created for an active proof."
+	case "claim.exchange_pin_resolved":
+		return "Exchange PIN used", "A temporary verification PIN opened a proof status page."
 	default:
 		return "Activity recorded", "A Kladd account activity was recorded."
 	}

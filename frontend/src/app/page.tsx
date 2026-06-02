@@ -92,6 +92,12 @@ type ClaimListResponse = {
   items: Claim[];
 };
 
+type ExchangePIN = {
+  claim_id: string;
+  exchange_pin: string;
+  expires_at: string;
+};
+
 type ActivityItem = {
   id: string;
   event_type: string;
@@ -213,6 +219,10 @@ export default function Home() {
   );
   const [copiedClaimID, setCopiedClaimID] = useState("");
   const [claimQRCodes, setClaimQRCodes] = useState<Record<string, string>>({});
+  const [claimExchangePINs, setClaimExchangePINs] = useState<
+    Record<string, ExchangePIN>
+  >({});
+  const [copiedExchangePINClaimID, setCopiedExchangePINClaimID] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -614,8 +624,43 @@ export default function Home() {
       setClaims((items) =>
         items.map((claim) => (claim.id === claimID ? revokedClaim : claim)),
       );
+      setClaimExchangePINs((items) => {
+        const next = { ...items };
+        delete next[claimID];
+        return next;
+      });
       setActivityItems(await loadActivityItems(token));
       setNotice("Proof revoked. Its proof details are now hidden.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleCreateExchangePIN(claimID: string) {
+    if (!token) {
+      setError("Please sign in before creating an exchange PIN.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const exchangePIN = await apiRequest<ExchangePIN>(
+        `/claims/${claimID}/exchange-pin`,
+        {
+          method: "POST",
+          token,
+        },
+      );
+      setClaimExchangePINs((items) => ({
+        ...items,
+        [claimID]: exchangePIN,
+      }));
+      setActivityItems(await loadActivityItems(token));
+      setNotice("Temporary exchange PIN created.");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -641,6 +686,28 @@ export default function Home() {
     }
   }
 
+  async function handleCopyExchangePIN(claimID: string) {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const exchangePIN = claimExchangePINs[claimID]?.exchange_pin;
+    if (!exchangePIN) {
+      setError("Create an exchange PIN first.");
+      return;
+    }
+
+    clearMessages();
+
+    try {
+      await window.navigator.clipboard.writeText(exchangePIN);
+      setCopiedExchangePINClaimID(claimID);
+      setNotice("Exchange PIN copied.");
+    } catch {
+      setError("Unable to copy exchange PIN.");
+    }
+  }
+
   async function loginWith(email: string, password: string) {
     const login = await apiRequest<LoginResponse>("/auth/login", {
       method: "POST",
@@ -663,7 +730,9 @@ export default function Home() {
     setActivityItems([]);
     setApprovalPINs({});
     setClaimQRCodes({});
+    setClaimExchangePINs({});
     setCopiedClaimID("");
+    setCopiedExchangePINClaimID("");
     setEvidenceForm(emptyEvidenceForm);
     setTestRequestForm(emptyTestRequestForm);
     setResetPINForm(emptyResetPINForm);
@@ -811,7 +880,17 @@ export default function Home() {
                           isSubmitting={isSubmitting}
                           copied={copiedClaimID === claim.id}
                           qrCodeSrc={claimQRCodes[claim.id] ?? ""}
+                          exchangePIN={claimExchangePINs[claim.id] ?? null}
+                          exchangePINCopied={
+                            copiedExchangePINClaimID === claim.id
+                          }
                           onCopyLink={() => handleCopyClaimLink(claim.id)}
+                          onCreateExchangePIN={() =>
+                            handleCreateExchangePIN(claim.id)
+                          }
+                          onCopyExchangePIN={() =>
+                            handleCopyExchangePIN(claim.id)
+                          }
                           onRevoke={() => handleRevokeClaim(claim.id)}
                         />
                       ))
@@ -1466,14 +1545,22 @@ function ClaimCard({
   isSubmitting,
   copied,
   qrCodeSrc,
+  exchangePIN,
+  exchangePINCopied,
   onCopyLink,
+  onCreateExchangePIN,
+  onCopyExchangePIN,
   onRevoke,
 }: {
   claim: Claim;
   isSubmitting: boolean;
   copied: boolean;
   qrCodeSrc: string;
+  exchangePIN: ExchangePIN | null;
+  exchangePINCopied: boolean;
   onCopyLink: () => void;
+  onCreateExchangePIN: () => void;
+  onCopyExchangePIN: () => void;
   onRevoke: () => void;
 }) {
   const canRevoke = claim.status === "active";
@@ -1543,6 +1630,50 @@ function ClaimCard({
               for this proof.
             </p>
           </div>
+        </div>
+      ) : null}
+
+      {canRevoke ? (
+        <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-950">
+                Temporary exchange PIN
+              </p>
+              <p className="mt-1 text-sm leading-6 text-slate-600">
+                Share this only when someone needs to open the verification
+                page without a QR code.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onCreateExchangePIN}
+              disabled={isSubmitting}
+              className="h-10 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
+            >
+              {exchangePIN ? "Refresh PIN" : "Create PIN"}
+            </button>
+          </div>
+
+          {exchangePIN ? (
+            <div className="mt-3 flex flex-col gap-2 rounded-md bg-[#f9fbfd] p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-mono text-2xl font-semibold tracking-normal text-slate-950">
+                  {exchangePIN.exchange_pin}
+                </p>
+                <p className="mt-1 text-xs font-medium text-slate-500">
+                  Expires {formatDateTime(exchangePIN.expires_at)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onCopyExchangePIN}
+                className="h-10 rounded-md border border-indigo-200 bg-white px-4 text-sm font-semibold text-indigo-700 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50"
+              >
+                {exchangePINCopied ? "Copied" : "Copy PIN"}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

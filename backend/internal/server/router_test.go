@@ -211,13 +211,16 @@ func (manager *fakeClaimRequestManager) Deny(ctx context.Context, input claimreq
 }
 
 type fakeClaimManager struct {
-	claim    claims.Claim
-	claims   []claims.Claim
-	err      error
-	userID   uuid.UUID
-	getID    uuid.UUID
-	statusID uuid.UUID
-	revokeID uuid.UUID
+	claim       claims.Claim
+	claims      []claims.Claim
+	err         error
+	userID      uuid.UUID
+	getID       uuid.UUID
+	statusID    uuid.UUID
+	revokeID    uuid.UUID
+	pinClaimID  uuid.UUID
+	exchangePIN string
+	pin         claims.ExchangePIN
 }
 
 func (manager *fakeClaimManager) ListForUser(ctx context.Context, userID uuid.UUID) ([]claims.Claim, error) {
@@ -254,6 +257,23 @@ func (manager *fakeClaimManager) Revoke(ctx context.Context, userID uuid.UUID, c
 	manager.claim.Status = claims.StatusRevoked
 	manager.claim.DetailsVisible = false
 	manager.claim.ApprovedTruths = nil
+	return manager.claim, nil
+}
+
+func (manager *fakeClaimManager) CreateExchangePIN(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.ExchangePIN, error) {
+	manager.userID = userID
+	manager.pinClaimID = claimID
+	if manager.err != nil {
+		return claims.ExchangePIN{}, manager.err
+	}
+	return manager.pin, nil
+}
+
+func (manager *fakeClaimManager) ResolveExchangePIN(ctx context.Context, exchangePIN string) (claims.Claim, error) {
+	manager.exchangePIN = exchangePIN
+	if manager.err != nil {
+		return claims.Claim{}, manager.err
+	}
 	return manager.claim, nil
 }
 
@@ -1886,6 +1906,182 @@ func TestClaimStatusHandlerRequiresGet(t *testing.T) {
 
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestCreateClaimExchangePINHandlerCreatesTemporaryPIN(t *testing.T) {
+	userID := uuid.New()
+	claimID := uuid.New()
+	manager := &fakeClaimManager{
+		pin: claims.ExchangePIN{
+			ClaimID:     claimID,
+			ExchangePIN: "12345678",
+			ExpiresAt:   time.Date(2026, 6, 1, 12, 15, 0, 0, time.UTC),
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: userID},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/claims/"+claimID.String()+"/exchange-pin", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusCreated, response.Body.String())
+	}
+	if manager.userID != userID {
+		t.Fatalf("user id = %s, want %s", manager.userID, userID)
+	}
+	if manager.pinClaimID != claimID {
+		t.Fatalf("claim id = %s, want %s", manager.pinClaimID, claimID)
+	}
+
+	body := response.Body.String()
+	if !strings.Contains(body, "12345678") {
+		t.Fatal("response should include the temporary exchange pin once")
+	}
+	for _, forbidden := range []string{"pin_hash", "security_pin", "security_pin_hash", "raw_document", "file_path"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestCreateClaimExchangePINHandlerMapsInactiveClaim(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{err: claims.ErrClaimNotActive},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/api/claims/"+uuid.New().String()+"/exchange-pin", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusConflict)
+	}
+}
+
+func TestResolveExchangePINHandlerReturnsVerificationStatusWithoutBearerToken(t *testing.T) {
+	claimID := uuid.New()
+	manager := &fakeClaimManager{
+		claim: claims.Claim{
+			ID:             claimID,
+			ClaimRequestID: uuid.New(),
+			Organization:   claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank", OrganizationType: "bank"},
+			Purpose:        "Account opening",
+			ApprovedTruths: []string{"identity_verified"},
+			Status:         claims.StatusActive,
+			IssuedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			ExpiresAt:      time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+			DetailsVisible: true,
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/exchange-pins/resolve", strings.NewReader(`{"exchange_pin":"12345678"}`))
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.exchangePIN != "12345678" {
+		t.Fatalf("exchange pin = %q, want %q", manager.exchangePIN, "12345678")
+	}
+
+	body := response.Body.String()
+	if !strings.Contains(body, "identity_verified") {
+		t.Fatal("active verification response should include approved truths")
+	}
+	for _, forbidden := range []string{"raw_document", "file_path", "security_pin", "security_pin_hash", "pin_hash", "truth_value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestResolveExchangePINHandlerMapsInvalidPIN(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{err: claims.ErrInvalidExchangePIN},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/api/exchange-pins/resolve", strings.NewReader(`{"exchange_pin":"12ab"}`))
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
+func TestResolveExchangePINHandlerMapsMissingPIN(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{err: claims.ErrExchangePINNotFound},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/api/exchange-pins/resolve", strings.NewReader(`{"exchange_pin":"12345678"}`))
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 	}
 }
 

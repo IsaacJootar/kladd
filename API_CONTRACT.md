@@ -27,6 +27,8 @@
 - GET /api/claims/{id}
 - GET /api/claims/{id}/status
 - POST /api/claims/{id}/revoke
+- POST /api/claims/{id}/exchange-pin
+- POST /api/exchange-pins/resolve
 
 ## Create User Request Body
 ```json
@@ -113,6 +115,23 @@ Truth definition responses return registry metadata only. They must not include 
 
 ## Verification URL
 GET /verify/{claim_id}
+
+## Exchange PIN
+POST /api/claims/{id}/exchange-pin
+
+Requires `Authorization: Bearer <access_token>`.
+
+Creates a short temporary exchange PIN for an active claim only. Responses include the one-time visible PIN and expiry, but never include PIN hashes, raw documents, sensitive identity anchors, Security PIN values, or Security PIN hashes.
+
+POST /api/exchange-pins/resolve
+
+```json
+{
+  "exchange_pin": "12345678"
+}
+```
+
+Resolves a temporary exchange PIN to the existing safe claim verification response. Expired PINs, expired claims, revoked claims, and inactive claims must not expose truth details.
 
 ## API Principles
 - no raw document exposure

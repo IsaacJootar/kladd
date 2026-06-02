@@ -3,6 +3,7 @@ package claims
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,14 +13,17 @@ import (
 )
 
 type recordingStore struct {
-	claim     Claim
-	claims    []Claim
-	err       error
-	userID    uuid.UUID
-	claimID   uuid.UUID
-	statusID  uuid.UUID
-	retrieved time.Time
-	revokedAt time.Time
+	claim      Claim
+	claims     []Claim
+	err        error
+	userID     uuid.UUID
+	claimID    uuid.UUID
+	statusID   uuid.UUID
+	retrieved  time.Time
+	revokedAt  time.Time
+	pinHash    string
+	pinExpiry  time.Time
+	pinCreated time.Time
 }
 
 func (store *recordingStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]Claim, error) {
@@ -57,6 +61,32 @@ func (store *recordingStore) Revoke(ctx context.Context, userID uuid.UUID, claim
 	claim.Status = StatusRevoked
 	claim.RevokedAt = &revokedAt
 	return claim, nil
+}
+
+func (store *recordingStore) CreateExchangePIN(ctx context.Context, userID uuid.UUID, claimID uuid.UUID, pinHash string, expiresAt time.Time, createdAt time.Time) (ExchangePIN, error) {
+	store.userID = userID
+	store.claimID = claimID
+	store.pinHash = pinHash
+	store.pinExpiry = expiresAt
+	store.pinCreated = createdAt
+	if store.err != nil {
+		return ExchangePIN{}, store.err
+	}
+
+	return ExchangePIN{
+		ClaimID:   claimID,
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+func (store *recordingStore) ResolveExchangePIN(ctx context.Context, pinHash string, retrievedAt time.Time) (Claim, error) {
+	store.pinHash = pinHash
+	store.retrieved = retrievedAt
+	if store.err != nil {
+		return Claim{}, store.err
+	}
+
+	return store.claim, nil
 }
 
 func TestServiceListHidesDetailsForExpiredClaims(t *testing.T) {
@@ -238,6 +268,90 @@ func TestServiceRevokeHidesClaimDetails(t *testing.T) {
 	}
 	if len(claim.ApprovedTruths) != 0 {
 		t.Fatal("revoked claim exposed approved truths")
+	}
+}
+
+func TestServiceCreateExchangePINGeneratesTemporaryPIN(t *testing.T) {
+	userID := uuid.New()
+	claimID := uuid.New()
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	store := &recordingStore{}
+	service := NewServiceWithClock(store, func() time.Time {
+		return now
+	})
+
+	exchangePIN, err := service.CreateExchangePIN(context.Background(), userID, claimID)
+	if err != nil {
+		t.Fatalf("create exchange pin: %v", err)
+	}
+
+	if store.userID != userID {
+		t.Fatalf("user id = %s, want %s", store.userID, userID)
+	}
+	if store.claimID != claimID {
+		t.Fatalf("claim id = %s, want %s", store.claimID, claimID)
+	}
+	if len(exchangePIN.ExchangePIN) != 8 {
+		t.Fatalf("pin length = %d, want 8", len(exchangePIN.ExchangePIN))
+	}
+	if !validExchangePIN(exchangePIN.ExchangePIN) {
+		t.Fatalf("generated invalid exchange pin %q", exchangePIN.ExchangePIN)
+	}
+	if store.pinHash == exchangePIN.ExchangePIN {
+		t.Fatal("store received raw exchange pin instead of hash")
+	}
+	if !store.pinCreated.Equal(now) {
+		t.Fatalf("created at = %s, want %s", store.pinCreated, now)
+	}
+	if !store.pinExpiry.Equal(now.Add(15 * time.Minute)) {
+		t.Fatalf("expires at = %s, want %s", store.pinExpiry, now.Add(15*time.Minute))
+	}
+}
+
+func TestServiceResolveExchangePINUsesStatusSanitization(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	store := &recordingStore{
+		claim: Claim{
+			ID:             uuid.New(),
+			ApprovedTruths: []string{"identity_verified"},
+			Status:         StatusActive,
+			ExpiresAt:      time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
+		},
+	}
+	service := NewServiceWithClock(store, func() time.Time {
+		return now
+	})
+
+	claim, err := service.ResolveExchangePIN(context.Background(), "123456")
+	if err != nil {
+		t.Fatalf("resolve exchange pin: %v", err)
+	}
+
+	if store.pinHash == "123456" {
+		t.Fatal("store received raw exchange pin instead of hash")
+	}
+	if !store.retrieved.Equal(now) {
+		t.Fatalf("retrieved at = %s, want %s", store.retrieved, now)
+	}
+	if claim.Status != StatusExpired {
+		t.Fatalf("status = %q, want %q", claim.Status, StatusExpired)
+	}
+	if claim.DetailsVisible {
+		t.Fatal("expired claim details should not be visible")
+	}
+	if len(claim.ApprovedTruths) != 0 {
+		t.Fatal("expired claim exposed approved truths")
+	}
+}
+
+func TestServiceResolveExchangePINRejectsInvalidPIN(t *testing.T) {
+	service := NewServiceWithClock(&recordingStore{}, func() time.Time {
+		return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	})
+
+	_, err := service.ResolveExchangePIN(context.Background(), "12ab")
+	if !errors.Is(err, ErrInvalidExchangePIN) {
+		t.Fatalf("err = %v, want %v", err, ErrInvalidExchangePIN)
 	}
 }
 

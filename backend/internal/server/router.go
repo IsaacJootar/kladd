@@ -68,6 +68,8 @@ type ClaimManager interface {
 	GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
 	GetStatus(ctx context.Context, claimID uuid.UUID) (claims.Claim, error)
 	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
+	CreateExchangePIN(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.ExchangePIN, error)
+	ResolveExchangePIN(ctx context.Context, exchangePIN string) (claims.Claim, error)
 }
 
 func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
@@ -83,6 +85,7 @@ func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter
 	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator))
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
 	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
+	mux.HandleFunc("/api/exchange-pins/resolve", resolveExchangePINHandler(claimManager))
 	mux.HandleFunc("/api/claims", claimsHandler(claimManager, authenticator))
 	mux.HandleFunc("/api/claims/", claimByIDHandler(claimManager, authenticator))
 
@@ -287,6 +290,10 @@ type createClaimRequestRequest struct {
 
 type approveClaimRequestRequest struct {
 	SecurityPIN string `json:"security_pin"`
+}
+
+type resolveExchangePINRequest struct {
+	ExchangePIN string `json:"exchange_pin"`
 }
 
 func evidenceItemsHandler(evidenceManager EvidenceManager, authenticator Authenticator) http.HandlerFunc {
@@ -582,6 +589,10 @@ func claimByIDHandler(claimManager ClaimManager, authenticator Authenticator) ht
 			revokeClaim(w, r, strings.TrimSuffix(path, "/revoke"), claimManager, authenticator)
 			return
 		}
+		if strings.HasSuffix(path, "/exchange-pin") {
+			createClaimExchangePIN(w, r, strings.TrimSuffix(path, "/exchange-pin"), claimManager, authenticator)
+			return
+		}
 
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -628,6 +639,57 @@ func claimStatus(w http.ResponseWriter, r *http.Request, claimIDValue string, cl
 	}
 
 	writeJSON(w, http.StatusOK, claim)
+}
+
+func createClaimExchangePIN(w http.ResponseWriter, r *http.Request, claimIDValue string, claimManager ClaimManager, authenticator Authenticator) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := authenticateRequest(w, r, authenticator)
+	if !ok {
+		return
+	}
+
+	claimID, err := uuid.Parse(claimIDValue)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
+		return
+	}
+
+	exchangePIN, err := claimManager.CreateExchangePIN(r.Context(), userID, claimID)
+	if err != nil {
+		writeCreateExchangePINError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, exchangePIN)
+}
+
+func resolveExchangePINHandler(claimManager ClaimManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var request resolveExchangePINRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			return
+		}
+
+		claim, err := claimManager.ResolveExchangePIN(r.Context(), request.ExchangePIN)
+		if err != nil {
+			writeResolveExchangePINError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, claim)
+	}
 }
 
 func revokeClaim(w http.ResponseWriter, r *http.Request, claimIDValue string, claimManager ClaimManager, authenticator Authenticator) {
@@ -830,6 +892,28 @@ func writeRevokeClaimError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "claim_not_active", "Only active claims can be revoked.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to revoke claim.")
+	}
+}
+
+func writeCreateExchangePINError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claims.ErrClaimNotFound):
+		writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
+	case errors.Is(err, claims.ErrClaimNotActive):
+		writeError(w, http.StatusConflict, "claim_not_active", "Only active claims can create exchange PINs.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to create exchange PIN.")
+	}
+}
+
+func writeResolveExchangePINError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claims.ErrInvalidExchangePIN):
+		writeError(w, http.StatusBadRequest, "invalid_exchange_pin", "Exchange PIN must be 6-8 digits.")
+	case errors.Is(err, claims.ErrExchangePINNotFound):
+		writeError(w, http.StatusNotFound, "exchange_pin_not_found", "Exchange PIN was not found or has expired.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to verify exchange PIN.")
 	}
 }
 
