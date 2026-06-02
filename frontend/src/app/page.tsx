@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
+import QRCode from "qrcode";
 
 type Mode = "register" | "login";
 
@@ -210,6 +212,7 @@ export default function Home() {
     emptyTestRequestForm,
   );
   const [copiedClaimID, setCopiedClaimID] = useState("");
+  const [claimQRCodes, setClaimQRCodes] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -289,6 +292,57 @@ export default function Home() {
       ignore = true;
     };
   }, [token]);
+
+  useEffect(() => {
+    let ignore = false;
+
+    async function buildQRCodes() {
+      if (!signedIn || typeof window === "undefined") {
+        return {};
+      }
+
+      const activeItems = claims.filter((claim) => claim.status === "active");
+      if (activeItems.length === 0) {
+        return {};
+      }
+
+      const entries = await Promise.all(
+        activeItems.map(async (claim) => {
+          const url = new URL(`/verify/${claim.id}`, window.location.origin)
+            .toString();
+          const image = await QRCode.toDataURL(url, {
+            errorCorrectionLevel: "M",
+            margin: 1,
+            width: 160,
+            color: {
+              dark: "#0f172a",
+              light: "#ffffff",
+            },
+          });
+
+          return [claim.id, image] as const;
+        }),
+      );
+
+      return Object.fromEntries(entries);
+    }
+
+    buildQRCodes()
+      .then((images) => {
+        if (!ignore) {
+          setClaimQRCodes(images);
+        }
+      })
+      .catch(() => {
+        if (!ignore) {
+          setClaimQRCodes({});
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [claims, signedIn]);
 
   async function handleRegister(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -608,6 +662,8 @@ export default function Home() {
     setClaims([]);
     setActivityItems([]);
     setApprovalPINs({});
+    setClaimQRCodes({});
+    setCopiedClaimID("");
     setEvidenceForm(emptyEvidenceForm);
     setTestRequestForm(emptyTestRequestForm);
     setResetPINForm(emptyResetPINForm);
@@ -754,6 +810,7 @@ export default function Home() {
                           claim={claim}
                           isSubmitting={isSubmitting}
                           copied={copiedClaimID === claim.id}
+                          qrCodeSrc={claimQRCodes[claim.id] ?? ""}
                           onCopyLink={() => handleCopyClaimLink(claim.id)}
                           onRevoke={() => handleRevokeClaim(claim.id)}
                         />
@@ -1408,12 +1465,14 @@ function ClaimCard({
   claim,
   isSubmitting,
   copied,
+  qrCodeSrc,
   onCopyLink,
   onRevoke,
 }: {
   claim: Claim;
   isSubmitting: boolean;
   copied: boolean;
+  qrCodeSrc: string;
   onCopyLink: () => void;
   onRevoke: () => void;
 }) {
@@ -1464,6 +1523,28 @@ function ClaimCard({
           </dd>
         </div>
       </dl>
+
+      {canRevoke && qrCodeSrc ? (
+        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3 sm:flex-row sm:items-center">
+          <Image
+            src={qrCodeSrc}
+            alt="Verification QR code"
+            width={112}
+            height={112}
+            unoptimized
+            className="h-28 w-28 rounded-md border border-slate-200 bg-white p-1"
+          />
+          <div>
+            <p className="text-sm font-semibold text-slate-950">
+              Scan to verify
+            </p>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              Anyone with this QR code can open the current verification page
+              for this proof.
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mt-4 flex flex-col gap-2 border-t border-slate-200 pt-4 sm:flex-row">
         <a
