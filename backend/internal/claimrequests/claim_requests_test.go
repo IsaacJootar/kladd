@@ -14,6 +14,7 @@ import (
 type recordingStore struct {
 	record        CreateRecord
 	approveRecord ApproveRecord
+	denyRecord    DenyRecord
 	request       ClaimRequest
 	requests      []ClaimRequest
 	approval      ApprovalResult
@@ -72,6 +73,21 @@ func (store *recordingStore) Approve(ctx context.Context, record ApproveRecord) 
 			ExpiresAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
 		},
 		ApprovedAt: record.ApprovedAt,
+	}, nil
+}
+
+func (store *recordingStore) Deny(ctx context.Context, record DenyRecord) (ClaimRequest, error) {
+	store.denyRecord = record
+	if store.err != nil {
+		return ClaimRequest{}, store.err
+	}
+
+	return ClaimRequest{
+		ID:              record.RequestID,
+		UserID:          record.UserID,
+		Status:          StatusDenied,
+		RequestedTruths: []string{"identity_verified"},
+		ExpiresAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
 	}, nil
 }
 
@@ -304,6 +320,79 @@ func TestServiceApproveRejectsExpiredRequest(t *testing.T) {
 		UserID:      uuid.New(),
 		RequestID:   uuid.New(),
 		SecurityPIN: "4829",
+	})
+	if !errors.Is(err, ErrClaimRequestExpired) {
+		t.Fatalf("error = %v, want %v", err, ErrClaimRequestExpired)
+	}
+}
+
+func TestServiceDenyMarksPendingRequestDeniedWithoutPIN(t *testing.T) {
+	userID := uuid.New()
+	requestID := uuid.New()
+	store := &recordingStore{
+		request: ClaimRequest{
+			ID:        requestID,
+			UserID:    userID,
+			Status:    StatusPendingApproval,
+			ExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+		},
+	}
+	service := NewService(store)
+
+	request, err := service.Deny(context.Background(), DenyInput{
+		UserID:    userID,
+		RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("deny request: %v", err)
+	}
+
+	if store.denyRecord.UserID != userID {
+		t.Fatalf("deny user id = %s, want %s", store.denyRecord.UserID, userID)
+	}
+	if store.denyRecord.RequestID != requestID {
+		t.Fatalf("deny request id = %s, want %s", store.denyRecord.RequestID, requestID)
+	}
+	if store.denyRecord.DeniedAt.IsZero() {
+		t.Fatal("expected denied timestamp")
+	}
+	if request.Status != StatusDenied {
+		t.Fatalf("status = %q, want %q", request.Status, StatusDenied)
+	}
+}
+
+func TestServiceDenyRequiresPendingRequest(t *testing.T) {
+	service := NewService(&recordingStore{
+		request: ClaimRequest{
+			ID:        uuid.New(),
+			UserID:    uuid.New(),
+			Status:    StatusApprovedWithPIN,
+			ExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+		},
+	})
+
+	_, err := service.Deny(context.Background(), DenyInput{
+		UserID:    uuid.New(),
+		RequestID: uuid.New(),
+	})
+	if !errors.Is(err, ErrClaimRequestNotOpen) {
+		t.Fatalf("error = %v, want %v", err, ErrClaimRequestNotOpen)
+	}
+}
+
+func TestServiceDenyRejectsExpiredRequest(t *testing.T) {
+	service := NewService(&recordingStore{
+		request: ClaimRequest{
+			ID:        uuid.New(),
+			UserID:    uuid.New(),
+			Status:    StatusPendingApproval,
+			ExpiresAt: time.Now().UTC().Add(-time.Hour),
+		},
+	})
+
+	_, err := service.Deny(context.Background(), DenyInput{
+		UserID:    uuid.New(),
+		RequestID: uuid.New(),
 	})
 	if !errors.Is(err, ErrClaimRequestExpired) {
 		t.Fatalf("error = %v, want %v", err, ErrClaimRequestExpired)

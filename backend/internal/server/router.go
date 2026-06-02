@@ -51,6 +51,7 @@ type ClaimRequestManager interface {
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]claimrequests.ClaimRequest, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (claimrequests.ClaimRequest, error)
 	Approve(ctx context.Context, input claimrequests.ApproveInput) (claimrequests.ApprovalResult, error)
+	Deny(ctx context.Context, input claimrequests.DenyInput) (claimrequests.ClaimRequest, error)
 }
 
 type ClaimManager interface {
@@ -371,6 +372,10 @@ func claimRequestByIDHandler(claimRequestManager ClaimRequestManager, authentica
 			approveClaimRequest(w, r, strings.TrimSuffix(path, "/approve"), claimRequestManager, authenticator)
 			return
 		}
+		if strings.HasSuffix(path, "/deny") {
+			denyClaimRequest(w, r, strings.TrimSuffix(path, "/deny"), claimRequestManager, authenticator)
+			return
+		}
 
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -436,6 +441,35 @@ func approveClaimRequest(w http.ResponseWriter, r *http.Request, requestIDValue 
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+func denyClaimRequest(w http.ResponseWriter, r *http.Request, requestIDValue string, claimRequestManager ClaimRequestManager, authenticator Authenticator) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := authenticateRequest(w, r, authenticator)
+	if !ok {
+		return
+	}
+
+	requestID, err := uuid.Parse(requestIDValue)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "claim_request_not_found", "Claim request was not found.")
+		return
+	}
+
+	claimRequest, err := claimRequestManager.Deny(r.Context(), claimrequests.DenyInput{
+		UserID:    userID,
+		RequestID: requestID,
+	})
+	if err != nil {
+		writeDenyClaimRequestError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, claimRequest)
 }
 
 func claimsHandler(claimManager ClaimManager, authenticator Authenticator) http.HandlerFunc {
@@ -630,6 +664,19 @@ func writeApproveClaimRequestError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "claim_request_not_pending", "This request is no longer pending approval.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to approve claim request.")
+	}
+}
+
+func writeDenyClaimRequestError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claimrequests.ErrClaimRequestNotFound):
+		writeError(w, http.StatusNotFound, "claim_request_not_found", "Claim request was not found.")
+	case errors.Is(err, claimrequests.ErrClaimRequestExpired):
+		writeError(w, http.StatusConflict, "claim_request_expired", "This request has expired.")
+	case errors.Is(err, claimrequests.ErrClaimRequestNotOpen):
+		writeError(w, http.StatusConflict, "claim_request_not_pending", "This request is no longer pending approval.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to deny claim request.")
 	}
 }
 

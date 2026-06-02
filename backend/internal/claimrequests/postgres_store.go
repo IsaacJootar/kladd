@@ -141,6 +141,42 @@ func (store PostgresStore) Approve(ctx context.Context, record ApproveRecord) (A
 	}, nil
 }
 
+func (store PostgresStore) Deny(ctx context.Context, record DenyRecord) (ClaimRequest, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	request, err := lockClaimRequestForApproval(ctx, tx, record.UserID, record.RequestID)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+	if request.Status != StatusPendingApproval {
+		return ClaimRequest{}, ErrClaimRequestNotOpen
+	}
+	if !request.ExpiresAt.After(record.DeniedAt) {
+		return ClaimRequest{}, ErrClaimRequestExpired
+	}
+
+	deniedRequest, err := updateClaimRequestDenied(ctx, tx, record.RequestID)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+
+	if err := insertClaimRequestDeniedAudit(ctx, tx, record, deniedRequest); err != nil {
+		return ClaimRequest{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ClaimRequest{}, err
+	}
+
+	return deniedRequest, nil
+}
+
 func upsertOrganization(ctx context.Context, tx *sql.Tx, record CreateRecord) (Organization, error) {
 	var organization Organization
 	err := tx.QueryRowContext(ctx, `
@@ -351,6 +387,38 @@ JOIN organizations org ON org.id = updated.organization_id`,
 	return request, nil
 }
 
+func updateClaimRequestDenied(ctx context.Context, tx *sql.Tx, requestID uuid.UUID) (ClaimRequest, error) {
+	request, err := scanClaimRequest(tx.QueryRowContext(ctx, `
+WITH updated AS (
+    UPDATE claim_requests
+    SET status = $2
+    WHERE id = $1
+    RETURNING id, user_id, purpose, scope_json, status, expires_at, created_at, organization_id
+)
+SELECT
+    updated.id,
+    updated.user_id,
+    updated.purpose,
+    updated.scope_json,
+    updated.status,
+    updated.expires_at,
+    updated.created_at,
+    org.id,
+    org.name,
+    org.organization_type,
+    org.verification_status
+FROM updated
+JOIN organizations org ON org.id = updated.organization_id`,
+		requestID,
+		StatusDenied,
+	))
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+
+	return request, nil
+}
+
 func insertClaimRequestApprovedAudit(ctx context.Context, tx *sql.Tx, record ApproveRecord, request ClaimRequest) error {
 	metadata, err := json.Marshal(map[string]any{
 		"claim_request_id": request.ID.String(),
@@ -378,6 +446,36 @@ INSERT INTO audit_logs (
 	)
 	if err != nil {
 		return fmt.Errorf("insert claim request approved audit: %w", err)
+	}
+
+	return nil
+}
+
+func insertClaimRequestDeniedAudit(ctx context.Context, tx *sql.Tx, record DenyRecord, request ClaimRequest) error {
+	metadata, err := json.Marshal(map[string]any{
+		"claim_request_id": request.ID.String(),
+		"denied_at":        record.DeniedAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"user",
+		request.UserID,
+		"claim_request.denied",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert claim request denied audit: %w", err)
 	}
 
 	return nil

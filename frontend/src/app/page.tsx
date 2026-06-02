@@ -443,6 +443,37 @@ export default function Home() {
     }
   }
 
+  async function handleDenyClaimRequest(requestID: string) {
+    if (!token) {
+      setError("Please sign in before denying a request.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const deniedRequest = await apiRequest<ClaimRequest>(
+        `/claim-requests/${requestID}/deny`,
+        {
+          method: "POST",
+          token,
+        },
+      );
+      setClaimRequests((requests) =>
+        requests.map((request) =>
+          request.id === requestID ? deniedRequest : request,
+        ),
+      );
+      setApprovalPINs((pins) => ({ ...pins, [requestID]: "" }));
+      setNotice("Request denied. No proof was released.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function handleRevokeClaim(claimID: string) {
     if (!token) {
       setError("Please sign in before revoking a proof.");
@@ -682,6 +713,7 @@ export default function Home() {
                           onApprove={(event) =>
                             handleApproveClaimRequest(event, request.id)
                           }
+                          onDeny={() => handleDenyClaimRequest(request.id)}
                         />
                       ))
                     ) : (
@@ -1131,12 +1163,14 @@ function ClaimRequestCard({
   isSubmitting,
   onPINChange,
   onApprove,
+  onDeny,
 }: {
   request: ClaimRequest;
   approvalPIN: string;
   isSubmitting: boolean;
   onPINChange: (value: string) => void;
   onApprove: (event: FormEvent<HTMLFormElement>) => void;
+  onDeny: () => void;
 }) {
   const canApprove = request.status === "pending_approval";
 
@@ -1182,7 +1216,7 @@ function ClaimRequestCard({
 
       {canApprove ? (
         <form
-          className="mt-4 grid gap-3 border-t border-slate-200 pt-4 sm:grid-cols-[minmax(0,1fr)_160px]"
+          className="mt-4 grid gap-3 border-t border-slate-200 pt-4 sm:grid-cols-[minmax(0,1fr)_220px]"
           onSubmit={onApprove}
         >
           <TextInput
@@ -1195,8 +1229,16 @@ function ClaimRequestCard({
             maxLength={6}
             required
           />
-          <div className="flex items-end">
+          <div className="grid gap-2 sm:grid-cols-2 sm:items-end">
             <SubmitButton disabled={isSubmitting}>Approve</SubmitButton>
+            <button
+              type="button"
+              onClick={onDeny}
+              disabled={isSubmitting}
+              className="h-11 w-full rounded-md border border-red-200 bg-white px-4 text-sm font-semibold text-red-700 shadow-sm transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
+            >
+              Deny
+            </button>
           </div>
         </form>
       ) : null}

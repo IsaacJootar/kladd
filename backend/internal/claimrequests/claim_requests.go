@@ -12,6 +12,7 @@ import (
 const (
 	StatusPendingApproval = "pending_approval"
 	StatusApprovedWithPIN = "approved_with_security_pin"
+	StatusDenied          = "denied"
 
 	ClaimStatusActive = "active"
 
@@ -48,6 +49,11 @@ type ApproveInput struct {
 	IPAddress   string
 	UserAgent   string
 	SessionID   string
+}
+
+type DenyInput struct {
+	UserID    uuid.UUID
+	RequestID uuid.UUID
 }
 
 type Organization struct {
@@ -102,11 +108,18 @@ type ApproveRecord struct {
 	SessionID  string
 }
 
+type DenyRecord struct {
+	RequestID uuid.UUID
+	UserID    uuid.UUID
+	DeniedAt  time.Time
+}
+
 type Store interface {
 	Create(ctx context.Context, record CreateRecord) (ClaimRequest, error)
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]ClaimRequest, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (ClaimRequest, error)
 	Approve(ctx context.Context, record ApproveRecord) (ApprovalResult, error)
+	Deny(ctx context.Context, record DenyRecord) (ClaimRequest, error)
 }
 
 type SecurityPINValidator interface {
@@ -196,6 +209,32 @@ func (service Service) Approve(ctx context.Context, input ApproveInput) (Approva
 		IPAddress:  strings.TrimSpace(input.IPAddress),
 		UserAgent:  strings.TrimSpace(input.UserAgent),
 		SessionID:  strings.TrimSpace(input.SessionID),
+	})
+}
+
+func (service Service) Deny(ctx context.Context, input DenyInput) (ClaimRequest, error) {
+	if input.UserID == uuid.Nil {
+		return ClaimRequest{}, ErrInvalidUser
+	}
+	if input.RequestID == uuid.Nil {
+		return ClaimRequest{}, ErrClaimRequestNotFound
+	}
+
+	request, err := service.store.GetForUser(ctx, input.UserID, input.RequestID)
+	if err != nil {
+		return ClaimRequest{}, err
+	}
+	if request.Status != StatusPendingApproval {
+		return ClaimRequest{}, ErrClaimRequestNotOpen
+	}
+	if !request.ExpiresAt.After(time.Now().UTC()) {
+		return ClaimRequest{}, ErrClaimRequestExpired
+	}
+
+	return service.store.Deny(ctx, DenyRecord{
+		RequestID: input.RequestID,
+		UserID:    input.UserID,
+		DeniedAt:  time.Now().UTC(),
 	})
 }
 

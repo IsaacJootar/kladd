@@ -135,6 +135,7 @@ type fakeClaimRequestManager struct {
 	err      error
 	input    claimrequests.CreateInput
 	approve  claimrequests.ApproveInput
+	deny     claimrequests.DenyInput
 	userID   uuid.UUID
 	getID    uuid.UUID
 }
@@ -170,6 +171,14 @@ func (manager *fakeClaimRequestManager) Approve(ctx context.Context, input claim
 		return claimrequests.ApprovalResult{}, manager.err
 	}
 	return manager.approval, nil
+}
+
+func (manager *fakeClaimRequestManager) Deny(ctx context.Context, input claimrequests.DenyInput) (claimrequests.ClaimRequest, error) {
+	manager.deny = input
+	if manager.err != nil {
+		return claimrequests.ClaimRequest{}, manager.err
+	}
+	return manager.request, nil
 }
 
 type fakeClaimManager struct {
@@ -1198,6 +1207,107 @@ func TestClaimRequestApproveHandlerMapsErrors(t *testing.T) {
 func TestClaimRequestApproveHandlerRequiresPost(t *testing.T) {
 	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
 	request := httptest.NewRequest(http.MethodGet, "/api/claim-requests/"+uuid.New().String()+"/approve", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestClaimRequestDenyHandlerDeniesRequest(t *testing.T) {
+	userID := uuid.New()
+	requestID := uuid.New()
+	manager := &fakeClaimRequestManager{
+		request: claimrequests.ClaimRequest{
+			ID:              requestID,
+			Organization:    claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank", OrganizationType: "bank"},
+			UserID:          userID,
+			Purpose:         "Account opening",
+			RequestedTruths: []string{"identity_verified"},
+			Status:          claimrequests.StatusDenied,
+			ExpiresAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+			CreatedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: userID},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+		manager,
+		&fakeClaimManager{},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/claim-requests/"+requestID.String()+"/deny", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.deny.UserID != userID {
+		t.Fatalf("user id = %s, want %s", manager.deny.UserID, userID)
+	}
+	if manager.deny.RequestID != requestID {
+		t.Fatalf("request id = %s, want %s", manager.deny.RequestID, requestID)
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{`"security_pin"`, "security_pin_hash", "raw_document", "file_path", "truth_value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestClaimRequestDenyHandlerMapsErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "not found", err: claimrequests.ErrClaimRequestNotFound, status: http.StatusNotFound},
+		{name: "expired", err: claimrequests.ErrClaimRequestExpired, status: http.StatusConflict},
+		{name: "not open", err: claimrequests.ErrClaimRequestNotOpen, status: http.StatusConflict},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			router := NewRouter(
+				config.Config{},
+				&fakeUserCreator{},
+				&fakeUserGetter{},
+				&fakeSecurityPINSetter{},
+				&fakeAuthenticator{userID: uuid.New()},
+				&fakeEvidenceManager{},
+				&fakeTruthDefinitionLister{},
+				&fakeClaimRequestManager{err: test.err},
+				&fakeClaimManager{},
+			)
+			request := httptest.NewRequest(http.MethodPost, "/api/claim-requests/"+uuid.New().String()+"/deny", nil)
+			request.Header.Set("Authorization", "Bearer test-token")
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+		})
+	}
+}
+
+func TestClaimRequestDenyHandlerRequiresPost(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
+	request := httptest.NewRequest(http.MethodGet, "/api/claim-requests/"+uuid.New().String()+"/deny", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	response := httptest.NewRecorder()
 
