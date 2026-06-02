@@ -7,15 +7,25 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/IsaacJootar/kladd/backend/internal/webhooks"
 	"github.com/google/uuid"
 )
 
 type PostgresStore struct {
-	db *sql.DB
+	db                   *sql.DB
+	webhookSigningSecret string
 }
 
-func NewPostgresStore(db *sql.DB) PostgresStore {
-	return PostgresStore{db: db}
+func NewPostgresStore(db *sql.DB, webhookSigningSecrets ...string) PostgresStore {
+	signingSecret := ""
+	if len(webhookSigningSecrets) > 0 {
+		signingSecret = webhookSigningSecrets[0]
+	}
+
+	return PostgresStore{
+		db:                   db,
+		webhookSigningSecret: signingSecret,
+	}
 }
 
 func (store PostgresStore) Create(ctx context.Context, record CreateRecord) (ClaimRequest, error) {
@@ -126,6 +136,18 @@ func (store PostgresStore) Approve(ctx context.Context, record ApproveRecord) (A
 	}
 
 	if err := insertClaimRequestApprovedAudit(ctx, tx, record, approvedRequest); err != nil {
+		return ApprovalResult{}, err
+	}
+
+	if err := webhooks.EnqueueClaimEvent(ctx, tx, store.webhookSigningSecret, webhooks.ClaimEvent{
+		EventType:      webhooks.EventClaimApproved,
+		ClaimID:        record.ClaimID,
+		ClaimRequestID: approvedRequest.ID,
+		OrganizationID: approvedRequest.Organization.ID,
+		Status:         ClaimStatusActive,
+		ExpiresAt:      approvedRequest.ExpiresAt,
+		OccurredAt:     record.ApprovedAt,
+	}); err != nil {
 		return ApprovalResult{}, err
 	}
 

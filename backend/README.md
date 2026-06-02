@@ -91,6 +91,7 @@ Responses include keys, categories, return types, sensitivity, validity duration
 $env:KLADD_HTTP_ADDR = ":8080"
 $env:KLADD_DATABASE_URL = "postgres://kladd:kladd_local_password@localhost:5432/kladd?sslmode=disable"
 $env:KLADD_JWT_SECRET = "local-dev-change-me"
+$env:KLADD_WEBHOOK_SIGNING_SECRET = "local-dev-webhook-secret"
 $env:KLADD_STORAGE_DIR = "storage"
 ```
 

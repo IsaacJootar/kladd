@@ -47,9 +47,9 @@ func main() {
 	auditService := audit.NewService(auditStore)
 	truthStore := truths.NewPostgresStore(db)
 	truthService := truths.NewService(truthStore)
-	claimRequestStore := claimrequests.NewPostgresStore(db)
+	claimRequestStore := claimrequests.NewPostgresStore(db, cfg.WebhookSigningSecret)
 	claimRequestService := claimrequests.NewService(claimRequestStore, pinValidationService)
-	claimStore := claims.NewPostgresStore(db)
+	claimStore := claims.NewPostgresStore(db, cfg.WebhookSigningSecret)
 	claimService := claims.NewService(claimStore)
 
 	apiServer := &http.Server{

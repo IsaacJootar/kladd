@@ -8,15 +8,25 @@ import (
 	"time"
 
 	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
+	"github.com/IsaacJootar/kladd/backend/internal/webhooks"
 	"github.com/google/uuid"
 )
 
 type PostgresStore struct {
-	db *sql.DB
+	db                   *sql.DB
+	webhookSigningSecret string
 }
 
-func NewPostgresStore(db *sql.DB) PostgresStore {
-	return PostgresStore{db: db}
+func NewPostgresStore(db *sql.DB, webhookSigningSecrets ...string) PostgresStore {
+	signingSecret := ""
+	if len(webhookSigningSecrets) > 0 {
+		signingSecret = webhookSigningSecrets[0]
+	}
+
+	return PostgresStore{
+		db:                   db,
+		webhookSigningSecret: signingSecret,
+	}
 }
 
 func (store PostgresStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]Claim, error) {
@@ -119,6 +129,18 @@ func (store PostgresStore) Revoke(ctx context.Context, userID uuid.UUID, claimID
 	}
 
 	if err := insertClaimRevokedAudit(ctx, tx, userID, claim); err != nil {
+		return Claim{}, err
+	}
+
+	if err := webhooks.EnqueueClaimEvent(ctx, tx, store.webhookSigningSecret, webhooks.ClaimEvent{
+		EventType:      webhooks.EventClaimRevoked,
+		ClaimID:        claim.ID,
+		ClaimRequestID: claim.ClaimRequestID,
+		OrganizationID: claim.Organization.ID,
+		Status:         StatusRevoked,
+		ExpiresAt:      claim.ExpiresAt,
+		OccurredAt:     revokedAt,
+	}); err != nil {
 		return Claim{}, err
 	}
 

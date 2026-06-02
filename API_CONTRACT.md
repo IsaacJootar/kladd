@@ -113,6 +113,19 @@ Truth definition responses return registry metadata only. They must not include 
 - claim.expired
 - claim.revoked
 
+Webhook delivery foundation records signed webhook payloads in an internal outbox table. Current MVP payloads include safe claim metadata only:
+
+- event_type
+- claim_id
+- claim_request_id
+- organization_id
+- status
+- expires_at
+- occurred_at
+- verification_path
+
+Webhook payloads must not include raw documents, truth values, sensitive identity anchors, Security PIN values, Security PIN hashes, or exchange PIN hashes.
+
 ## Verification URL
 GET /verify/{claim_id}
 

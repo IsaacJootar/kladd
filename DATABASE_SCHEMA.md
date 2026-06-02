@@ -107,3 +107,17 @@
 - event_type
 - metadata_json
 - created_at
+
+### webhook_deliveries
+- id
+- event_type
+- aggregate_id
+- organization_id
+- payload_json
+- signature
+- status
+- attempts
+- next_attempt_at
+- delivered_at
+- created_at
+- updated_at
