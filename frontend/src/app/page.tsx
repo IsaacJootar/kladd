@@ -1303,8 +1303,14 @@ function ClaimCard({
         </div>
       </dl>
 
-      {canRevoke ? (
-        <div className="mt-4 border-t border-slate-200 pt-4">
+      <div className="mt-4 flex flex-col gap-2 border-t border-slate-200 pt-4 sm:flex-row">
+        <a
+          href={`/verify/${claim.id}`}
+          className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50"
+        >
+          View verification
+        </a>
+        {canRevoke ? (
           <button
             type="button"
             onClick={onRevoke}
@@ -1313,8 +1319,8 @@ function ClaimCard({
           >
             Revoke proof
           </button>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </article>
   );
 }

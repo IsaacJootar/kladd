@@ -57,6 +57,7 @@ type ClaimRequestManager interface {
 type ClaimManager interface {
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]claims.Claim, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
+	GetStatus(ctx context.Context, claimID uuid.UUID) (claims.Claim, error)
 	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
 }
 
@@ -499,6 +500,10 @@ func claimsHandler(claimManager ClaimManager, authenticator Authenticator) http.
 func claimByIDHandler(claimManager ClaimManager, authenticator Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/claims/")
+		if strings.HasSuffix(path, "/status") {
+			claimStatus(w, r, strings.TrimSuffix(path, "/status"), claimManager)
+			return
+		}
 		if strings.HasSuffix(path, "/revoke") {
 			revokeClaim(w, r, strings.TrimSuffix(path, "/revoke"), claimManager, authenticator)
 			return
@@ -528,6 +533,27 @@ func claimByIDHandler(claimManager ClaimManager, authenticator Authenticator) ht
 
 		writeJSON(w, http.StatusOK, claim)
 	}
+}
+
+func claimStatus(w http.ResponseWriter, r *http.Request, claimIDValue string, claimManager ClaimManager) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	claimID, err := uuid.Parse(claimIDValue)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "claim_not_found", "Claim was not found.")
+		return
+	}
+
+	claim, err := claimManager.GetStatus(r.Context(), claimID)
+	if err != nil {
+		writeGetClaimError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, claim)
 }
 
 func revokeClaim(w http.ResponseWriter, r *http.Request, claimIDValue string, claimManager ClaimManager, authenticator Authenticator) {

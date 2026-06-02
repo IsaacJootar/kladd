@@ -37,6 +37,7 @@ type Claim struct {
 type Store interface {
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]Claim, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (Claim, error)
+	GetStatus(ctx context.Context, claimID uuid.UUID, retrievedAt time.Time) (Claim, error)
 	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID, revokedAt time.Time) (Claim, error)
 }
 
@@ -81,6 +82,19 @@ func (service Service) GetForUser(ctx context.Context, userID uuid.UUID, claimID
 	}
 
 	claim, err := service.store.GetForUser(ctx, userID, claimID)
+	if err != nil {
+		return Claim{}, err
+	}
+
+	return service.sanitizeClaim(claim), nil
+}
+
+func (service Service) GetStatus(ctx context.Context, claimID uuid.UUID) (Claim, error) {
+	if claimID == uuid.Nil {
+		return Claim{}, ErrClaimNotFound
+	}
+
+	claim, err := service.store.GetStatus(ctx, claimID, service.now())
 	if err != nil {
 		return Claim{}, err
 	}

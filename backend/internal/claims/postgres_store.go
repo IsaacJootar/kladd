@@ -62,6 +62,37 @@ WHERE cr.user_id = $1 AND c.id = $2`,
 	return claim, nil
 }
 
+func (store PostgresStore) GetStatus(ctx context.Context, claimID uuid.UUID, retrievedAt time.Time) (Claim, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Claim{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	claim, err := scanClaim(tx.QueryRowContext(ctx, claimSelectQuery()+`
+WHERE c.id = $1`,
+		claimID,
+	))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Claim{}, ErrClaimNotFound
+		}
+		return Claim{}, err
+	}
+
+	if err := insertClaimStatusRetrievedAudit(ctx, tx, claim, retrievedAt); err != nil {
+		return Claim{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Claim{}, err
+	}
+
+	return claim, nil
+}
+
 func (store PostgresStore) Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID, revokedAt time.Time) (Claim, error) {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -211,6 +242,38 @@ INSERT INTO audit_logs (
 	)
 	if err != nil {
 		return fmt.Errorf("insert claim revoked audit: %w", err)
+	}
+
+	return nil
+}
+
+func insertClaimStatusRetrievedAudit(ctx context.Context, tx *sql.Tx, claim Claim, retrievedAt time.Time) error {
+	metadata, err := json.Marshal(map[string]string{
+		"claim_id":         claim.ID.String(),
+		"claim_request_id": claim.ClaimRequestID.String(),
+		"status":           claim.Status,
+		"retrieved_at":     retrievedAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"system",
+		nil,
+		"claim.status_retrieved",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert claim status retrieved audit: %w", err)
 	}
 
 	return nil

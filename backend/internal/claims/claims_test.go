@@ -17,6 +17,8 @@ type recordingStore struct {
 	err       error
 	userID    uuid.UUID
 	claimID   uuid.UUID
+	statusID  uuid.UUID
+	retrieved time.Time
 	revokedAt time.Time
 }
 
@@ -28,6 +30,15 @@ func (store *recordingStore) ListForUser(ctx context.Context, userID uuid.UUID) 
 }
 
 func (store *recordingStore) GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (Claim, error) {
+	if store.err != nil {
+		return Claim{}, store.err
+	}
+	return store.claim, nil
+}
+
+func (store *recordingStore) GetStatus(ctx context.Context, claimID uuid.UUID, retrievedAt time.Time) (Claim, error) {
+	store.statusID = claimID
+	store.retrieved = retrievedAt
 	if store.err != nil {
 		return Claim{}, store.err
 	}
@@ -100,6 +111,93 @@ func TestServiceGetShowsDetailsForActiveClaim(t *testing.T) {
 	}
 	if len(claim.ApprovedTruths) != 1 {
 		t.Fatal("active claim should include approved truths")
+	}
+}
+
+func TestServiceGetStatusShowsDetailsForActiveClaim(t *testing.T) {
+	claimID := uuid.New()
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	store := &recordingStore{
+		claim: Claim{
+			ID:             claimID,
+			ApprovedTruths: []string{"identity_verified"},
+			Status:         StatusActive,
+			ExpiresAt:      time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	service := NewServiceWithClock(store, func() time.Time {
+		return now
+	})
+
+	claim, err := service.GetStatus(context.Background(), claimID)
+	if err != nil {
+		t.Fatalf("get claim status: %v", err)
+	}
+
+	if store.statusID != claimID {
+		t.Fatalf("claim id = %s, want %s", store.statusID, claimID)
+	}
+	if !store.retrieved.Equal(now) {
+		t.Fatalf("retrieved at = %s, want %s", store.retrieved, now)
+	}
+	if !claim.DetailsVisible {
+		t.Fatal("active claim details should be visible")
+	}
+	if len(claim.ApprovedTruths) != 1 {
+		t.Fatal("active claim should include approved truths")
+	}
+}
+
+func TestServiceGetStatusHidesDetailsForRevokedClaim(t *testing.T) {
+	service := NewServiceWithClock(&recordingStore{
+		claim: Claim{
+			ID:             uuid.New(),
+			ApprovedTruths: []string{"identity_verified"},
+			Status:         StatusRevoked,
+			ExpiresAt:      time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+		},
+	}, func() time.Time {
+		return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	})
+
+	claim, err := service.GetStatus(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("get claim status: %v", err)
+	}
+
+	if claim.DetailsVisible {
+		t.Fatal("revoked claim details should not be visible")
+	}
+	if len(claim.ApprovedTruths) != 0 {
+		t.Fatal("revoked claim exposed approved truths")
+	}
+}
+
+func TestServiceGetStatusHidesDetailsForExpiredClaim(t *testing.T) {
+	service := NewServiceWithClock(&recordingStore{
+		claim: Claim{
+			ID:             uuid.New(),
+			ApprovedTruths: []string{"identity_verified"},
+			Status:         StatusActive,
+			ExpiresAt:      time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
+		},
+	}, func() time.Time {
+		return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	})
+
+	claim, err := service.GetStatus(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("get claim status: %v", err)
+	}
+
+	if claim.Status != StatusExpired {
+		t.Fatalf("status = %q, want %q", claim.Status, StatusExpired)
+	}
+	if claim.DetailsVisible {
+		t.Fatal("expired claim details should not be visible")
+	}
+	if len(claim.ApprovedTruths) != 0 {
+		t.Fatal("expired claim exposed approved truths")
 	}
 }
 

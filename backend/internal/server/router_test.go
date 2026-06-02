@@ -187,6 +187,7 @@ type fakeClaimManager struct {
 	err      error
 	userID   uuid.UUID
 	getID    uuid.UUID
+	statusID uuid.UUID
 	revokeID uuid.UUID
 }
 
@@ -201,6 +202,14 @@ func (manager *fakeClaimManager) ListForUser(ctx context.Context, userID uuid.UU
 func (manager *fakeClaimManager) GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error) {
 	manager.userID = userID
 	manager.getID = claimID
+	if manager.err != nil {
+		return claims.Claim{}, manager.err
+	}
+	return manager.claim, nil
+}
+
+func (manager *fakeClaimManager) GetStatus(ctx context.Context, claimID uuid.UUID) (claims.Claim, error) {
+	manager.statusID = claimID
 	if manager.err != nil {
 		return claims.Claim{}, manager.err
 	}
@@ -1507,6 +1516,90 @@ func TestClaimByIDHandlerMapsNotFound(t *testing.T) {
 
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestClaimStatusHandlerReturnsVerificationStatusWithoutBearerToken(t *testing.T) {
+	claimID := uuid.New()
+	manager := &fakeClaimManager{
+		claim: claims.Claim{
+			ID:             claimID,
+			ClaimRequestID: uuid.New(),
+			Organization:   claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank", OrganizationType: "bank"},
+			Purpose:        "Account opening",
+			ApprovedTruths: []string{"identity_verified"},
+			Status:         claims.StatusActive,
+			IssuedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			ExpiresAt:      time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+			DetailsVisible: true,
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/claims/"+claimID.String()+"/status", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.statusID != claimID {
+		t.Fatalf("claim id = %s, want %s", manager.statusID, claimID)
+	}
+
+	body := response.Body.String()
+	if !strings.Contains(body, "identity_verified") {
+		t.Fatal("active verification response should include approved truths")
+	}
+	for _, forbidden := range []string{"raw_document", "file_path", "security_pin", "security_pin_hash", "truth_value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestClaimStatusHandlerMapsNotFound(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{err: claims.ErrClaimNotFound},
+	)
+	request := httptest.NewRequest(http.MethodGet, "/api/claims/"+uuid.New().String()+"/status", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestClaimStatusHandlerRequiresGet(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
+	request := httptest.NewRequest(http.MethodPost, "/api/claims/"+uuid.New().String()+"/status", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
 	}
 }
 
