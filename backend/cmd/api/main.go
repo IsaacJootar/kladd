@@ -15,6 +15,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/database"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
+	"github.com/IsaacJootar/kladd/backend/internal/orgauth"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/server"
 	"github.com/IsaacJootar/kladd/backend/internal/truths"
@@ -51,10 +52,12 @@ func main() {
 	claimRequestService := claimrequests.NewService(claimRequestStore, pinValidationService)
 	claimStore := claims.NewPostgresStore(db, cfg.WebhookSigningSecret)
 	claimService := claims.NewService(claimStore)
+	orgAuthStore := orgauth.NewPostgresStore(db)
+	orgAuthService := orgauth.NewService(orgAuthStore)
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService, userService, pinService, pinResetService, authService, evidenceService, auditService, truthService, claimRequestService, claimService),
+		Handler:           server.NewRouterWithOrganizationAPI(cfg, userService, userService, pinService, pinResetService, authService, evidenceService, auditService, truthService, claimRequestService, claimService, orgAuthService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

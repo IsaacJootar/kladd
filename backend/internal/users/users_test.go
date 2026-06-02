@@ -11,6 +11,7 @@ import (
 
 type recordingStore struct {
 	record CreateRecord
+	email  string
 	user   User
 	err    error
 }
@@ -32,6 +33,14 @@ func (store *recordingStore) Create(ctx context.Context, record CreateRecord) (U
 }
 
 func (store *recordingStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
+	if store.err != nil {
+		return User{}, store.err
+	}
+	return store.user, nil
+}
+
+func (store *recordingStore) GetByEmail(ctx context.Context, email string) (User, error) {
+	store.email = email
 	if store.err != nil {
 		return User{}, store.err
 	}
@@ -163,5 +172,40 @@ func TestServiceGetReturnsUser(t *testing.T) {
 
 	if user.ID != userID {
 		t.Fatalf("user id = %s, want %s", user.ID, userID)
+	}
+}
+
+func TestServiceGetByEmailReturnsUser(t *testing.T) {
+	userID := uuid.New()
+	store := &recordingStore{
+		user: User{
+			ID:                 userID,
+			Name:               "Ada Lovelace",
+			Email:              "ada@example.com",
+			AccountType:        AccountTypeIndividual,
+			VerificationStatus: VerificationStatusUnverified,
+		},
+	}
+	service := NewService(store)
+
+	user, err := service.GetByEmail(context.Background(), " ADA@Example.COM ")
+	if err != nil {
+		t.Fatalf("get user by email: %v", err)
+	}
+
+	if store.email != "ada@example.com" {
+		t.Fatalf("email = %q, want normalized email", store.email)
+	}
+	if user.ID != userID {
+		t.Fatalf("user id = %s, want %s", user.ID, userID)
+	}
+}
+
+func TestServiceGetByEmailValidatesEmail(t *testing.T) {
+	service := NewService(&recordingStore{})
+
+	_, err := service.GetByEmail(context.Background(), "not-email")
+	if !errors.Is(err, ErrInvalidEmail) {
+		t.Fatalf("err = %v, want %v", err, ErrInvalidEmail)
 	}
 }

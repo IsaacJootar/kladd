@@ -58,6 +58,7 @@ type User struct {
 type Store interface {
 	Create(ctx context.Context, record CreateRecord) (User, error)
 	Get(ctx context.Context, id uuid.UUID) (User, error)
+	GetByEmail(ctx context.Context, email string) (User, error)
 }
 
 type Service struct {
@@ -79,6 +80,15 @@ func (service Service) Create(ctx context.Context, input CreateInput) (User, err
 
 func (service Service) Get(ctx context.Context, id uuid.UUID) (User, error) {
 	return service.store.Get(ctx, id)
+}
+
+func (service Service) GetByEmail(ctx context.Context, email string) (User, error) {
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	if _, err := mail.ParseAddress(normalized); err != nil {
+		return User{}, ErrInvalidEmail
+	}
+
+	return service.store.GetByEmail(ctx, normalized)
 }
 
 func prepareCreateRecord(input CreateInput) (CreateRecord, error) {

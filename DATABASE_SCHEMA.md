@@ -22,6 +22,16 @@
 - organization_type
 - verification_status
 
+### organization_api_keys
+- id
+- organization_id
+- key_hash
+- key_prefix
+- name
+- last_used_at
+- revoked_at
+- created_at
+
 ### evidence_items
 - id
 - user_id

@@ -13,6 +13,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/claims"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
+	"github.com/IsaacJootar/kladd/backend/internal/orgauth"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
@@ -27,6 +28,7 @@ type UserCreator interface {
 
 type UserGetter interface {
 	Get(ctx context.Context, id uuid.UUID) (users.User, error)
+	GetByEmail(ctx context.Context, email string) (users.User, error)
 }
 
 type SecurityPINSetter interface {
@@ -72,7 +74,19 @@ type ClaimManager interface {
 	ResolveExchangePIN(ctx context.Context, exchangePIN string) (claims.Claim, error)
 }
 
+type OrganizationAuthenticator interface {
+	Authenticate(ctx context.Context, apiKey string) (claimrequests.Organization, error)
+}
+
 func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
+	return buildRouter(cfg, userCreator, userGetter, pinSetter, pinResetter, authenticator, evidenceManager, auditLogLister, truthDefinitionLister, claimRequestManager, claimManager, nil)
+}
+
+func NewRouterWithOrganizationAPI(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager, organizationAuthenticator OrganizationAuthenticator) http.Handler {
+	return buildRouter(cfg, userCreator, userGetter, pinSetter, pinResetter, authenticator, evidenceManager, auditLogLister, truthDefinitionLister, claimRequestManager, claimManager, organizationAuthenticator)
+}
+
+func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager, organizationAuthenticator OrganizationAuthenticator) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
@@ -85,6 +99,9 @@ func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter
 	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator))
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
 	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
+	if organizationAuthenticator != nil {
+		mux.HandleFunc("/api/organization/claim-requests", organizationClaimRequestsHandler(claimRequestManager, userGetter, organizationAuthenticator))
+	}
 	mux.HandleFunc("/api/exchange-pins/resolve", resolveExchangePINHandler(claimManager))
 	mux.HandleFunc("/api/claims", claimsHandler(claimManager, authenticator))
 	mux.HandleFunc("/api/claims/", claimByIDHandler(claimManager, authenticator))
@@ -288,6 +305,13 @@ type createClaimRequestRequest struct {
 	DurationDays     int      `json:"duration_days"`
 }
 
+type createOrganizationClaimRequestRequest struct {
+	UserEmail       string   `json:"user_email"`
+	Purpose         string   `json:"purpose"`
+	RequestedTruths []string `json:"requested_truths"`
+	DurationDays    int      `json:"duration_days"`
+}
+
 type approveClaimRequestRequest struct {
 	SecurityPIN string `json:"security_pin"`
 }
@@ -444,6 +468,49 @@ func claimRequestsHandler(claimRequestManager ClaimRequestManager, authenticator
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+func organizationClaimRequestsHandler(claimRequestManager ClaimRequestManager, userGetter UserGetter, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
+		if !ok {
+			return
+		}
+
+		var request createOrganizationClaimRequestRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			return
+		}
+
+		user, err := userGetter.GetByEmail(r.Context(), request.UserEmail)
+		if err != nil {
+			writeOrganizationClaimRequestUserError(w, err)
+			return
+		}
+
+		claimRequest, err := claimRequestManager.Create(r.Context(), claimrequests.CreateInput{
+			UserID:           user.ID,
+			OrganizationName: organization.Name,
+			OrganizationType: organization.OrganizationType,
+			Purpose:          request.Purpose,
+			RequestedTruths:  request.RequestedTruths,
+			DurationDays:     request.DurationDays,
+		})
+		if err != nil {
+			writeCreateClaimRequestError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, claimRequest)
 	}
 }
 
@@ -814,6 +881,17 @@ func writeCreateClaimRequestError(w http.ResponseWriter, err error) {
 	}
 }
 
+func writeOrganizationClaimRequestUserError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, users.ErrInvalidEmail):
+		writeError(w, http.StatusBadRequest, "invalid_user_email", "A valid user email is required.")
+	case errors.Is(err, users.ErrUserNotFound):
+		writeError(w, http.StatusNotFound, "user_not_found", "Target user was not found.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load target user.")
+	}
+}
+
 func writeListClaimRequestsError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, claimrequests.ErrInvalidUser):
@@ -941,6 +1019,29 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request, authenticator A
 	}
 
 	return userID, true
+}
+
+func authenticateOrganizationRequest(w http.ResponseWriter, r *http.Request, authenticator OrganizationAuthenticator) (claimrequests.Organization, bool) {
+	apiKey := strings.TrimSpace(r.Header.Get("X-Kladd-API-Key"))
+	if apiKey == "" {
+		writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
+		return claimrequests.Organization{}, false
+	}
+
+	organization, err := authenticator.Authenticate(r.Context(), apiKey)
+	if err != nil {
+		switch {
+		case errors.Is(err, orgauth.ErrMissingAPIKey):
+			writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
+		case errors.Is(err, orgauth.ErrInvalidAPIKey):
+			writeError(w, http.StatusUnauthorized, "invalid_organization_api_key", "Organization API key is invalid.")
+		default:
+			writeError(w, http.StatusInternalServerError, "server_error", "Unable to authenticate organization.")
+		}
+		return claimrequests.Organization{}, false
+	}
+
+	return organization, true
 }
 
 func bearerToken(header string) (string, bool) {

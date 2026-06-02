@@ -48,6 +48,14 @@ func (store PostgresStore) Create(ctx context.Context, record CreateRecord) (Use
 }
 
 func (store PostgresStore) Get(ctx context.Context, id uuid.UUID) (User, error) {
+	return store.getBy(ctx, "id = $1", id)
+}
+
+func (store PostgresStore) GetByEmail(ctx context.Context, email string) (User, error) {
+	return store.getBy(ctx, "email = $1", email)
+}
+
+func (store PostgresStore) getBy(ctx context.Context, predicate string, value any) (User, error) {
 	var user User
 	err := store.db.QueryRowContext(ctx, `
 SELECT
@@ -59,8 +67,8 @@ SELECT
     verification_status,
     created_at
 FROM users
-WHERE id = $1`,
-		id,
+WHERE `+predicate,
+		value,
 	).Scan(
 		&user.ID,
 		&user.Name,

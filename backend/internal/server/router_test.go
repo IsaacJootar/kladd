@@ -18,6 +18,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/claims"
 	"github.com/IsaacJootar/kladd/backend/internal/config"
 	"github.com/IsaacJootar/kladd/backend/internal/evidence"
+	"github.com/IsaacJootar/kladd/backend/internal/orgauth"
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
@@ -42,10 +43,19 @@ type fakeUserGetter struct {
 	user   users.User
 	err    error
 	userID uuid.UUID
+	email  string
 }
 
 func (getter *fakeUserGetter) Get(ctx context.Context, id uuid.UUID) (users.User, error) {
 	getter.userID = id
+	if getter.err != nil {
+		return users.User{}, getter.err
+	}
+	return getter.user, nil
+}
+
+func (getter *fakeUserGetter) GetByEmail(ctx context.Context, email string) (users.User, error) {
+	getter.email = email
 	if getter.err != nil {
 		return users.User{}, getter.err
 	}
@@ -275,6 +285,20 @@ func (manager *fakeClaimManager) ResolveExchangePIN(ctx context.Context, exchang
 		return claims.Claim{}, manager.err
 	}
 	return manager.claim, nil
+}
+
+type fakeOrganizationAuthenticator struct {
+	organization claimrequests.Organization
+	err          error
+	apiKey       string
+}
+
+func (authenticator *fakeOrganizationAuthenticator) Authenticate(ctx context.Context, apiKey string) (claimrequests.Organization, error) {
+	authenticator.apiKey = apiKey
+	if authenticator.err != nil {
+		return claimrequests.Organization{}, authenticator.err
+	}
+	return authenticator.organization, nil
 }
 
 func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator, evidenceManagers ...*fakeEvidenceManager) http.Handler {
@@ -1344,6 +1368,171 @@ func TestClaimRequestsHandlerCreatesPendingRequest(t *testing.T) {
 	}
 	if manager.input.RequestedTruths[0] != "identity_verified" {
 		t.Fatalf("requested truth = %q, want identity_verified", manager.input.RequestedTruths[0])
+	}
+}
+
+func TestOrganizationClaimRequestsHandlerCreatesPendingRequest(t *testing.T) {
+	userID := uuid.New()
+	orgID := uuid.New()
+	requestID := uuid.New()
+	userGetter := &fakeUserGetter{
+		user: users.User{
+			ID:    userID,
+			Email: "ada@example.com",
+		},
+	}
+	manager := &fakeClaimRequestManager{
+		request: claimrequests.ClaimRequest{
+			ID:     requestID,
+			UserID: userID,
+			Organization: claimrequests.Organization{
+				ID:               orgID,
+				Name:             "Acme Bank",
+				OrganizationType: "bank",
+			},
+			Purpose:         "Account opening",
+			RequestedTruths: []string{"identity_verified"},
+			Status:          claimrequests.StatusPendingApproval,
+			ExpiresAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+			CreatedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	orgAuthenticator := &fakeOrganizationAuthenticator{
+		organization: claimrequests.Organization{
+			ID:               orgID,
+			Name:             "Acme Bank",
+			OrganizationType: "bank",
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		userGetter,
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		manager,
+		&fakeClaimManager{},
+		orgAuthenticator,
+	)
+
+	body := `{"user_email":"ada@example.com","purpose":"Account opening","requested_truths":["identity_verified"],"duration_days":30}`
+	request := httptest.NewRequest(http.MethodPost, "/api/organization/claim-requests", strings.NewReader(body))
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusCreated, response.Body.String())
+	}
+	if orgAuthenticator.apiKey != "test-api-key" {
+		t.Fatalf("api key = %q, want test-api-key", orgAuthenticator.apiKey)
+	}
+	if userGetter.email != "ada@example.com" {
+		t.Fatalf("user email = %q, want ada@example.com", userGetter.email)
+	}
+	if manager.input.UserID != userID {
+		t.Fatalf("user id = %s, want %s", manager.input.UserID, userID)
+	}
+	if manager.input.OrganizationName != "Acme Bank" {
+		t.Fatalf("organization name = %q, want Acme Bank", manager.input.OrganizationName)
+	}
+	if manager.input.OrganizationType != "bank" {
+		t.Fatalf("organization type = %q, want bank", manager.input.OrganizationType)
+	}
+	if manager.input.RequestedTruths[0] != "identity_verified" {
+		t.Fatalf("requested truth = %q, want identity_verified", manager.input.RequestedTruths[0])
+	}
+
+	responseBody := response.Body.String()
+	for _, forbidden := range []string{"raw_document", "file_path", "security_pin", "security_pin_hash", "truth_value", "api_key", "key_hash"} {
+		if strings.Contains(responseBody, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestOrganizationClaimRequestsHandlerRequiresAPIKey(t *testing.T) {
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/organization/claim-requests", strings.NewReader(`{}`))
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestOrganizationClaimRequestsHandlerMapsInvalidAPIKey(t *testing.T) {
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{err: orgauth.ErrInvalidAPIKey},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/organization/claim-requests", strings.NewReader(`{}`))
+	request.Header.Set("X-Kladd-API-Key", "bad-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestOrganizationClaimRequestsHandlerMapsMissingTargetUser(t *testing.T) {
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{err: users.ErrUserNotFound},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{organization: claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank", OrganizationType: "bank"}},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/organization/claim-requests", strings.NewReader(`{"user_email":"missing@example.com","purpose":"Account opening","requested_truths":["identity_verified"],"duration_days":30}`))
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 	}
 }
 

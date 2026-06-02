@@ -21,6 +21,7 @@
 
 ## Core Endpoints
 - POST /api/claim-requests
+- POST /api/organization/claim-requests
 - GET /api/claim-requests/{id}
 - POST /api/claim-requests/{id}/approve
 - POST /api/claim-requests/{id}/deny
@@ -106,6 +107,22 @@ Truth definition responses return registry metadata only. They must not include 
   "security_pin": "4829"
 }
 ```
+
+## Organization Claim Request
+POST /api/organization/claim-requests
+
+Requires `X-Kladd-API-Key`.
+
+```json
+{
+  "user_email": "ada@example.com",
+  "purpose": "Account opening",
+  "requested_truths": ["identity_verified"],
+  "duration_days": 30
+}
+```
+
+This creates a pending claim request for the target user. It must not issue a claim or release truths. The user must still approve with their Security PIN before any claim becomes active.
 
 ## Webhook Events
 - claim.approved
