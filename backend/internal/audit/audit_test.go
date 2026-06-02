@@ -1,0 +1,104 @@
+package audit
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type recordingStore struct {
+	records []Record
+	userID  uuid.UUID
+	limit   int
+	err     error
+}
+
+func (store *recordingStore) ListForUser(ctx context.Context, userID uuid.UUID, limit int) ([]Record, error) {
+	store.userID = userID
+	store.limit = limit
+	if store.err != nil {
+		return nil, store.err
+	}
+	return store.records, nil
+}
+
+func TestServiceListsSafeUserEvents(t *testing.T) {
+	userID := uuid.New()
+	store := &recordingStore{
+		records: []Record{
+			{
+				ID:        uuid.New(),
+				EventType: "evidence.created",
+				Metadata: map[string]string{
+					"category":  "degree_certificate",
+					"file_path": "storage/private/raw.pdf",
+				},
+				CreatedAt: time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+			},
+			{
+				ID:        uuid.New(),
+				EventType: "claim_request.approved",
+				Metadata: map[string]string{
+					"claim_id": "hidden",
+				},
+				CreatedAt: time.Date(2026, 6, 2, 13, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	service := NewService(store)
+
+	events, err := service.ListForUser(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	if store.userID != userID {
+		t.Fatalf("user id = %s, want %s", store.userID, userID)
+	}
+	if store.limit != 20 {
+		t.Fatalf("limit = %d, want 20", store.limit)
+	}
+	if events[0].Title != "Record added" {
+		t.Fatalf("title = %q, want Record added", events[0].Title)
+	}
+	if !strings.Contains(events[0].Description, "degree certificate") {
+		t.Fatalf("description = %q, want friendly category", events[0].Description)
+	}
+	if strings.Contains(events[0].Description, "file_path") || strings.Contains(events[0].Description, "storage/private") {
+		t.Fatal("event description exposed storage details")
+	}
+
+	payload, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("marshal events: %v", err)
+	}
+	for _, forbidden := range []string{"metadata", "file_path", "password", "security_pin", "security_pin_hash", "raw_document"} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("events response exposed forbidden value %q", forbidden)
+		}
+	}
+}
+
+func TestServiceRequiresUser(t *testing.T) {
+	service := NewService(&recordingStore{})
+
+	_, err := service.ListForUser(context.Background(), uuid.Nil)
+	if !errors.Is(err, ErrInvalidUser) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidUser)
+	}
+}
+
+func TestServiceReturnsStoreErrors(t *testing.T) {
+	storeErr := errors.New("db down")
+	service := NewService(&recordingStore{err: storeErr})
+
+	_, err := service.ListForUser(context.Background(), uuid.New())
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("error = %v, want %v", err, storeErr)
+	}
+}

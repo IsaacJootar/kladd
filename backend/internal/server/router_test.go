@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IsaacJootar/kladd/backend/internal/audit"
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
 	"github.com/IsaacJootar/kladd/backend/internal/claims"
@@ -126,6 +127,20 @@ func (manager *fakeEvidenceManager) List(ctx context.Context, userID uuid.UUID) 
 		return nil, manager.err
 	}
 	return manager.items, nil
+}
+
+type fakeAuditLogLister struct {
+	events []audit.Event
+	err    error
+	userID uuid.UUID
+}
+
+func (lister *fakeAuditLogLister) ListForUser(ctx context.Context, userID uuid.UUID) ([]audit.Event, error) {
+	lister.userID = userID
+	if lister.err != nil {
+		return nil, lister.err
+	}
+	return lister.events, nil
 }
 
 type fakeTruthDefinitionLister struct {
@@ -260,7 +275,7 @@ func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pin
 		evidenceManager = evidenceManagers[0]
 	}
 
-	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, &fakeSecurityPINResetter{}, authenticator, evidenceManager, &fakeTruthDefinitionLister{}, &fakeClaimRequestManager{}, &fakeClaimManager{})
+	return NewRouter(config.Config{}, userCreator, userGetter, pinSetter, &fakeSecurityPINResetter{}, authenticator, evidenceManager, &fakeAuditLogLister{}, &fakeTruthDefinitionLister{}, &fakeClaimRequestManager{}, &fakeClaimManager{})
 }
 
 func TestCreateUserHandlerCreatesUser(t *testing.T) {
@@ -713,6 +728,7 @@ func TestResetSecurityPINHandlerResetsPINAfterPasswordCheck(t *testing.T) {
 		resetter,
 		authenticator,
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		&fakeClaimManager{},
@@ -773,6 +789,7 @@ func TestResetSecurityPINHandlerMapsErrors(t *testing.T) {
 				&fakeSecurityPINResetter{err: test.err},
 				&fakeAuthenticator{userID: uuid.New()},
 				&fakeEvidenceManager{},
+				&fakeAuditLogLister{},
 				&fakeTruthDefinitionLister{},
 				&fakeClaimRequestManager{},
 				&fakeClaimManager{},
@@ -974,6 +991,107 @@ func TestEvidenceItemsHandlerRequiresKnownMethod(t *testing.T) {
 	}
 }
 
+func TestAuditLogsHandlerListsSafeUserEvents(t *testing.T) {
+	userID := uuid.New()
+	lister := &fakeAuditLogLister{
+		events: []audit.Event{
+			{
+				ID:          uuid.New(),
+				EventType:   "security_pin.reset",
+				Title:       "Security PIN reset",
+				Description: "Your Security PIN was reset after account confirmation.",
+				CreatedAt:   time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: userID},
+		&fakeEvidenceManager{},
+		lister,
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if lister.userID != userID {
+		t.Fatalf("user id = %s, want %s", lister.userID, userID)
+	}
+
+	body := response.Body.String()
+	if !strings.Contains(body, "Security PIN reset") {
+		t.Fatal("expected safe event title in response")
+	}
+	for _, forbidden := range []string{"metadata_json", "password", "password_hash", "security_pin_hash", "file_path", "raw_document"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestAuditLogsHandlerRequiresBearerToken(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuditLogsHandlerMapsErrors(t *testing.T) {
+	router := NewRouter(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{err: errors.New("boom")},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+	)
+	request := httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestAuditLogsHandlerRequiresGet(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
+	request := httptest.NewRequest(http.MethodPost, "/api/audit-logs", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
 func TestTruthDefinitionsHandlerListsDefinitionMetadata(t *testing.T) {
 	lister := &fakeTruthDefinitionLister{
 		definitions: []truths.Definition{
@@ -998,6 +1116,7 @@ func TestTruthDefinitionsHandlerListsDefinitionMetadata(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: uuid.New()},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		lister,
 		&fakeClaimRequestManager{},
 		&fakeClaimManager{},
@@ -1034,6 +1153,7 @@ func TestTruthDefinitionsHandlerRequiresBearerToken(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		&fakeClaimManager{},
@@ -1057,6 +1177,7 @@ func TestTruthDefinitionsHandlerMapsErrors(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: uuid.New()},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{err: errors.New("boom")},
 		&fakeClaimRequestManager{},
 		&fakeClaimManager{},
@@ -1081,6 +1202,7 @@ func TestTruthDefinitionsHandlerRequiresGet(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: uuid.New()},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		&fakeClaimManager{},
@@ -1124,6 +1246,7 @@ func TestClaimRequestsHandlerListsPendingRequests(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: userID},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		manager,
 		&fakeClaimManager{},
@@ -1177,6 +1300,7 @@ func TestClaimRequestsHandlerCreatesPendingRequest(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: userID},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		manager,
 		&fakeClaimManager{},
@@ -1226,6 +1350,7 @@ func TestClaimRequestByIDHandlerReturnsOwnedRequest(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: userID},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		manager,
 		&fakeClaimManager{},
@@ -1278,6 +1403,7 @@ func TestClaimRequestApproveHandlerApprovesWithSecurityPIN(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: userID},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		manager,
 		&fakeClaimManager{},
@@ -1339,6 +1465,7 @@ func TestClaimRequestApproveHandlerMapsErrors(t *testing.T) {
 				&fakeSecurityPINResetter{},
 				&fakeAuthenticator{userID: uuid.New()},
 				&fakeEvidenceManager{},
+				&fakeAuditLogLister{},
 				&fakeTruthDefinitionLister{},
 				&fakeClaimRequestManager{err: test.err},
 				&fakeClaimManager{},
@@ -1392,6 +1519,7 @@ func TestClaimRequestDenyHandlerDeniesRequest(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: userID},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		manager,
 		&fakeClaimManager{},
@@ -1442,6 +1570,7 @@ func TestClaimRequestDenyHandlerMapsErrors(t *testing.T) {
 				&fakeSecurityPINResetter{},
 				&fakeAuthenticator{userID: uuid.New()},
 				&fakeEvidenceManager{},
+				&fakeAuditLogLister{},
 				&fakeTruthDefinitionLister{},
 				&fakeClaimRequestManager{err: test.err},
 				&fakeClaimManager{},
@@ -1507,6 +1636,7 @@ func TestClaimRequestsHandlerMapsCreateErrors(t *testing.T) {
 				&fakeSecurityPINResetter{},
 				&fakeAuthenticator{userID: uuid.New()},
 				&fakeEvidenceManager{},
+				&fakeAuditLogLister{},
 				&fakeTruthDefinitionLister{},
 				&fakeClaimRequestManager{err: test.err},
 				&fakeClaimManager{},
@@ -1563,6 +1693,7 @@ func TestClaimsHandlerListsUserClaims(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: userID},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		manager,
@@ -1613,6 +1744,7 @@ func TestClaimByIDHandlerReturnsUserClaim(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: userID},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		manager,
@@ -1653,6 +1785,7 @@ func TestClaimByIDHandlerMapsNotFound(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: uuid.New()},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		&fakeClaimManager{err: claims.ErrClaimNotFound},
@@ -1691,6 +1824,7 @@ func TestClaimStatusHandlerReturnsVerificationStatusWithoutBearerToken(t *testin
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: uuid.New()},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		manager,
@@ -1728,6 +1862,7 @@ func TestClaimStatusHandlerMapsNotFound(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: uuid.New()},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		&fakeClaimManager{err: claims.ErrClaimNotFound},
@@ -1778,6 +1913,7 @@ func TestClaimRevokeHandlerRevokesClaim(t *testing.T) {
 		&fakeSecurityPINResetter{},
 		&fakeAuthenticator{userID: userID},
 		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
 		&fakeTruthDefinitionLister{},
 		&fakeClaimRequestManager{},
 		manager,
@@ -1825,6 +1961,7 @@ func TestClaimRevokeHandlerMapsErrors(t *testing.T) {
 				&fakeSecurityPINResetter{},
 				&fakeAuthenticator{userID: uuid.New()},
 				&fakeEvidenceManager{},
+				&fakeAuditLogLister{},
 				&fakeTruthDefinitionLister{},
 				&fakeClaimRequestManager{},
 				&fakeClaimManager{err: test.err},

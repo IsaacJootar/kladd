@@ -90,6 +90,18 @@ type ClaimListResponse = {
   items: Claim[];
 };
 
+type ActivityItem = {
+  id: string;
+  event_type: string;
+  title: string;
+  description: string;
+  created_at: string;
+};
+
+type ActivityListResponse = {
+  items: ActivityItem[];
+};
+
 type ProofPreview = {
   title: string;
   description: string;
@@ -191,6 +203,7 @@ export default function Home() {
   const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
   const [claimRequests, setClaimRequests] = useState<ClaimRequest[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
+  const [activityItems, setActivityItems] = useState<ActivityItem[]>([]);
   const [approvalPINs, setApprovalPINs] = useState<Record<string, string>>({});
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [testRequestForm, setTestRequestForm] = useState(
@@ -219,13 +232,16 @@ export default function Home() {
       },
       { label: "Pending Requests", value: String(pendingClaimRequests.length) },
       { label: "Active Proofs", value: String(activeClaims.length) },
-      { label: "Recent Activity", value: evidenceItems.length > 0 ? "Records added" : "Ready" },
+      {
+        label: "Recent Activity",
+        value: activityItems.length > 0 ? String(activityItems.length) : "Ready",
+      },
     ],
     [
       currentUser?.verification_status,
       pendingClaimRequests.length,
       activeClaims.length,
-      evidenceItems.length,
+      activityItems.length,
     ],
   );
 
@@ -243,13 +259,15 @@ export default function Home() {
       loadEvidenceItems(token),
       loadClaimRequests(token),
       loadClaims(token),
+      loadActivityItems(token),
     ])
-      .then(([user, evidence, requests, loadedClaims]) => {
+      .then(([user, evidence, requests, loadedClaims, activity]) => {
         if (!ignore) {
           setCurrentUser(user);
           setEvidenceItems(evidence);
           setClaimRequests(requests);
           setClaims(loadedClaims);
+          setActivityItems(activity);
         }
       })
       .catch(() => {
@@ -261,6 +279,7 @@ export default function Home() {
           setEvidenceItems([]);
           setClaimRequests([]);
           setClaims([]);
+          setActivityItems([]);
           setApprovalPINs({});
         }
       });
@@ -327,6 +346,7 @@ export default function Home() {
         body: JSON.stringify({ security_pin: securityPIN }),
       });
       setSecurityPIN("");
+      setActivityItems(await loadActivityItems(token));
       setNotice(
         result.security_pin_set
           ? "Security PIN set. Future claim approvals will require it."
@@ -362,6 +382,7 @@ export default function Home() {
         },
       );
       setResetPINForm(emptyResetPINForm);
+      setActivityItems(await loadActivityItems(token));
       setNotice(
         result.security_pin_set
           ? "Security PIN reset. Future claim approvals will require the new PIN."
@@ -400,6 +421,7 @@ export default function Home() {
         body: formData,
       });
       setEvidenceItems((items) => [item, ...items]);
+      setActivityItems(await loadActivityItems(token));
       setEvidenceForm(emptyEvidenceForm);
       setNotice("Record added.");
     } catch (err) {
@@ -475,6 +497,7 @@ export default function Home() {
         ),
       );
       setClaims(await loadClaims(token));
+      setActivityItems(await loadActivityItems(token));
       setApprovalPINs((pins) => ({ ...pins, [requestID]: "" }));
       setNotice("Request approved. A time-bound proof is now active.");
     } catch (err) {
@@ -506,6 +529,7 @@ export default function Home() {
           request.id === requestID ? deniedRequest : request,
         ),
       );
+      setActivityItems(await loadActivityItems(token));
       setApprovalPINs((pins) => ({ ...pins, [requestID]: "" }));
       setNotice("Request denied. No proof was released.");
     } catch (err) {
@@ -535,6 +559,7 @@ export default function Home() {
       setClaims((items) =>
         items.map((claim) => (claim.id === claimID ? revokedClaim : claim)),
       );
+      setActivityItems(await loadActivityItems(token));
       setNotice("Proof revoked. Its proof details are now hidden.");
     } catch (err) {
       setError(readError(err));
@@ -562,6 +587,7 @@ export default function Home() {
     setEvidenceItems([]);
     setClaimRequests([]);
     setClaims([]);
+    setActivityItems([]);
     setApprovalPINs({});
     setEvidenceForm(emptyEvidenceForm);
     setTestRequestForm(emptyTestRequestForm);
@@ -761,6 +787,37 @@ export default function Home() {
                     ) : (
                       <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500">
                         No pending requests.
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-500">
+                        Access History
+                      </p>
+                      <h2 className="mt-1 text-xl font-semibold tracking-normal">
+                        Recent activity
+                      </h2>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
+                        Track important account and proof actions.
+                      </p>
+                    </div>
+                    <span className="w-fit rounded-md bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">
+                      {activityItems.length} events
+                    </span>
+                  </div>
+
+                  <div className="mt-5 grid gap-3">
+                    {activityItems.length > 0 ? (
+                      activityItems.map((item) => (
+                        <ActivityCard key={item.id} item={item} />
+                      ))
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500">
+                        No activity yet.
                       </div>
                     )}
                   </div>
@@ -1405,6 +1462,24 @@ function ClaimCard({
   );
 }
 
+function ActivityCard({ item }: { item: ActivityItem }) {
+  return (
+    <article className="rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-950">{item.title}</p>
+          <p className="mt-1 text-sm leading-6 text-slate-600">
+            {item.description}
+          </p>
+        </div>
+        <span className="w-fit rounded-md bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">
+          {formatDateTime(item.created_at)}
+        </span>
+      </div>
+    </article>
+  );
+}
+
 function ProofPreviewCard({ proof }: { proof: ProofPreview }) {
   return (
     <article className="min-h-40 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
@@ -1577,6 +1652,15 @@ async function loadClaimRequests(accessToken: string) {
 
 async function loadClaims(accessToken: string) {
   const response = await apiRequest<ClaimListResponse>("/claims", {
+    method: "GET",
+    token: accessToken,
+  });
+
+  return response.items;
+}
+
+async function loadActivityItems(accessToken: string) {
+  const response = await apiRequest<ActivityListResponse>("/audit-logs", {
     method: "GET",
     token: accessToken,
   });

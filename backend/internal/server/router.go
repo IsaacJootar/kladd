@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/IsaacJootar/kladd/backend/internal/audit"
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
 	"github.com/IsaacJootar/kladd/backend/internal/claims"
@@ -46,6 +47,10 @@ type EvidenceManager interface {
 	List(ctx context.Context, userID uuid.UUID) ([]evidence.EvidenceItem, error)
 }
 
+type AuditLogLister interface {
+	ListForUser(ctx context.Context, userID uuid.UUID) ([]audit.Event, error)
+}
+
 type TruthDefinitionLister interface {
 	ListDefinitions(ctx context.Context) ([]truths.Definition, error)
 }
@@ -65,7 +70,7 @@ type ClaimManager interface {
 	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
 }
 
-func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
+func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
@@ -74,6 +79,7 @@ func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter
 	mux.HandleFunc("/api/account/security-pin", setupSecurityPINHandler(pinSetter, authenticator))
 	mux.HandleFunc("/api/account/security-pin/reset", resetSecurityPINHandler(pinResetter, authenticator))
 	mux.HandleFunc("/api/evidence-items", evidenceItemsHandler(evidenceManager, authenticator))
+	mux.HandleFunc("/api/audit-logs", auditLogsHandler(auditLogLister, authenticator))
 	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator))
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
 	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
@@ -306,6 +312,30 @@ func evidenceItemsHandler(evidenceManager EvidenceManager, authenticator Authent
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+func auditLogsHandler(auditLogLister AuditLogLister, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, ok := authenticateRequest(w, r, authenticator)
+		if !ok {
+			return
+		}
+
+		events, err := auditLogLister.ListForUser(r.Context(), userID)
+		if err != nil {
+			writeListAuditLogsError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string][]audit.Event{
+			"items": events,
+		})
 	}
 }
 
@@ -695,6 +725,15 @@ func writeCreateEvidenceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_file", "Evidence file is required.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to save evidence record.")
+	}
+}
+
+func writeListAuditLogsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, audit.ErrInvalidUser):
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load access history.")
 	}
 }
 

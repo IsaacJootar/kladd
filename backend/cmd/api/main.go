@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/IsaacJootar/kladd/backend/internal/audit"
 	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
 	"github.com/IsaacJootar/kladd/backend/internal/claims"
@@ -42,6 +43,8 @@ func main() {
 	evidenceStore := evidence.NewPostgresStore(db)
 	evidenceStorage := evidence.NewLocalStorage(cfg.StorageDir)
 	evidenceService := evidence.NewService(evidenceStore, evidenceStorage)
+	auditStore := audit.NewPostgresStore(db)
+	auditService := audit.NewService(auditStore)
 	truthStore := truths.NewPostgresStore(db)
 	truthService := truths.NewService(truthStore)
 	claimRequestStore := claimrequests.NewPostgresStore(db)
@@ -51,7 +54,7 @@ func main() {
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService, userService, pinService, pinResetService, authService, evidenceService, truthService, claimRequestService, claimService),
+		Handler:           server.NewRouter(cfg, userService, userService, pinService, pinResetService, authService, evidenceService, auditService, truthService, claimRequestService, claimService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

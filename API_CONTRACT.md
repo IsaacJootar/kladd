@@ -10,6 +10,7 @@
 - GET /api/account/me
 - POST /api/account/security-pin
 - POST /api/account/security-pin/reset
+- GET /api/audit-logs
 
 ## Evidence Endpoints
 - GET /api/evidence-items
