@@ -34,7 +34,7 @@ func TestServiceListsSafeUserEvents(t *testing.T) {
 			{
 				ID:        uuid.New(),
 				EventType: "evidence.created",
-				Metadata: map[string]string{
+				Metadata: map[string]any{
 					"category":  "degree_certificate",
 					"file_path": "storage/private/raw.pdf",
 				},
@@ -43,7 +43,7 @@ func TestServiceListsSafeUserEvents(t *testing.T) {
 			{
 				ID:        uuid.New(),
 				EventType: "claim_request.approved",
-				Metadata: map[string]string{
+				Metadata: map[string]any{
 					"claim_id": "hidden",
 				},
 				CreatedAt: time.Date(2026, 6, 2, 13, 0, 0, 0, time.UTC),
@@ -81,6 +81,31 @@ func TestServiceListsSafeUserEvents(t *testing.T) {
 		if strings.Contains(string(payload), forbidden) {
 			t.Fatalf("events response exposed forbidden value %q", forbidden)
 		}
+	}
+}
+
+func TestServiceHandlesMixedAuditMetadataValues(t *testing.T) {
+	service := NewService(&recordingStore{
+		records: []Record{
+			{
+				ID:        uuid.New(),
+				EventType: "security_pin.validation_succeeded",
+				Metadata: map[string]any{
+					"failed_attempts": float64(0),
+					"locked":          false,
+				},
+				CreatedAt: time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	})
+
+	events, err := service.ListForUser(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	if events[0].Title != "Security PIN confirmed" {
+		t.Fatalf("title = %q, want Security PIN confirmed", events[0].Title)
 	}
 }
 

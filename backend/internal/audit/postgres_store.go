@@ -64,7 +64,7 @@ func scanRecord(scanner recordScanner) (Record, error) {
 		return Record{}, err
 	}
 
-	var metadata map[string]string
+	var metadata map[string]any
 	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
 		return Record{}, err
 	}

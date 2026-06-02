@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -24,7 +25,7 @@ type Event struct {
 type Record struct {
 	ID        uuid.UUID
 	EventType string
-	Metadata  map[string]string
+	Metadata  map[string]any
 	CreatedAt time.Time
 }
 
@@ -74,7 +75,7 @@ func formatEvent(record Record) Event {
 	}
 }
 
-func eventCopy(eventType string, metadata map[string]string) (string, string) {
+func eventCopy(eventType string, metadata map[string]any) (string, string) {
 	switch eventType {
 	case "user.created":
 		return "Account created", "Your Kladd account was created."
@@ -101,8 +102,8 @@ func eventCopy(eventType string, metadata map[string]string) (string, string) {
 	}
 }
 
-func friendlyValue(value string) string {
-	cleaned := strings.TrimSpace(value)
+func friendlyValue(value any) string {
+	cleaned := strings.TrimSpace(fmt.Sprint(value))
 	if cleaned == "" {
 		return "new"
 	}
