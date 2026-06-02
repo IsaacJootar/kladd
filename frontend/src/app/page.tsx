@@ -156,6 +156,11 @@ const emptyLoginForm = {
   password: "",
 };
 
+const emptyResetPINForm = {
+  password: "",
+  securityPIN: "",
+};
+
 const emptyEvidenceForm = {
   category: "passport",
   displayName: "",
@@ -175,6 +180,7 @@ export default function Home() {
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
   const [loginForm, setLoginForm] = useState(emptyLoginForm);
   const [securityPIN, setSecurityPIN] = useState("");
+  const [resetPINForm, setResetPINForm] = useState(emptyResetPINForm);
   const [token, setToken] = useState(() =>
     readSessionValue("kladd_access_token"),
   );
@@ -325,6 +331,41 @@ export default function Home() {
         result.security_pin_set
           ? "Security PIN set. Future claim approvals will require it."
           : "Security PIN was not updated.",
+      );
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleResetPIN(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) {
+      setError("Please sign in before resetting your Security PIN.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const result = await apiRequest<PinResponse>(
+        "/account/security-pin/reset",
+        {
+          method: "POST",
+          token,
+          body: JSON.stringify({
+            password: resetPINForm.password,
+            security_pin: resetPINForm.securityPIN,
+          }),
+        },
+      );
+      setResetPINForm(emptyResetPINForm);
+      setNotice(
+        result.security_pin_set
+          ? "Security PIN reset. Future claim approvals will require the new PIN."
+          : "Security PIN was not reset.",
       );
     } catch (err) {
       setError(readError(err));
@@ -524,6 +565,7 @@ export default function Home() {
     setApprovalPINs({});
     setEvidenceForm(emptyEvidenceForm);
     setTestRequestForm(emptyTestRequestForm);
+    setResetPINForm(emptyResetPINForm);
     clearAuthStorage();
     setNotice("Signed out.");
     setError("");
@@ -917,6 +959,44 @@ export default function Home() {
                 />
                 <SubmitButton disabled={!signedIn || isSubmitting}>
                   Set Security PIN
+                </SubmitButton>
+              </form>
+
+              <form
+                className="mt-5 space-y-4 border-t border-indigo-100 pt-5"
+                onSubmit={handleResetPIN}
+              >
+                <TextInput
+                  label="Account password"
+                  type="password"
+                  value={resetPINForm.password}
+                  onChange={(value) =>
+                    setResetPINForm((form) => ({
+                      ...form,
+                      password: value,
+                    }))
+                  }
+                  disabled={!signedIn}
+                  required
+                />
+                <TextInput
+                  label="New Security PIN"
+                  type="password"
+                  inputMode="numeric"
+                  value={resetPINForm.securityPIN}
+                  onChange={(value) =>
+                    setResetPINForm((form) => ({
+                      ...form,
+                      securityPIN: value,
+                    }))
+                  }
+                  minLength={4}
+                  maxLength={6}
+                  disabled={!signedIn}
+                  required
+                />
+                <SubmitButton disabled={!signedIn || isSubmitting}>
+                  Reset Security PIN
                 </SubmitButton>
               </form>
             </section>

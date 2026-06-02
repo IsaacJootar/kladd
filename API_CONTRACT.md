@@ -66,6 +66,16 @@ Current account responses return safe user fields only. They must not include pa
 
 Security PIN setup requires `Authorization: Bearer <access_token>`. Responses must not include the PIN or PIN hash.
 
+## Reset Security PIN Request Body
+```json
+{
+  "password": "strong-password",
+  "security_pin": "7391"
+}
+```
+
+Security PIN reset requires `Authorization: Bearer <access_token>` and account password re-authentication. Responses must not include the password, password hash, PIN, or PIN hash.
+
 ## Create Evidence Item Request
 POST /api/evidence-items
 

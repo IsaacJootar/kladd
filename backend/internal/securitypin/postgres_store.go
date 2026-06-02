@@ -43,6 +43,49 @@ func (store PostgresStore) SetPIN(ctx context.Context, userID uuid.UUID, pinHash
 	return result, nil
 }
 
+func (store PostgresStore) GetPasswordHash(ctx context.Context, userID uuid.UUID) (string, error) {
+	var passwordHash string
+	err := store.db.QueryRowContext(ctx, `
+SELECT password_hash
+FROM users
+WHERE id = $1`,
+		userID,
+	).Scan(&passwordHash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", ErrUserNotFound
+		}
+		return "", err
+	}
+
+	return passwordHash, nil
+}
+
+func (store PostgresStore) ResetPIN(ctx context.Context, userID uuid.UUID, pinHash string, resetAt time.Time) (SetupResult, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	result, err := updateUserPIN(ctx, tx, userID, pinHash, resetAt)
+	if err != nil {
+		return SetupResult{}, err
+	}
+
+	if err := insertSecurityPINResetAudit(ctx, tx, userID); err != nil {
+		return SetupResult{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return SetupResult{}, err
+	}
+
+	return result, nil
+}
+
 func (store PostgresStore) GetValidationState(ctx context.Context, userID uuid.UUID) (ValidationState, error) {
 	var state ValidationState
 	var lockedUntil sql.NullTime
@@ -191,6 +234,35 @@ INSERT INTO audit_logs (
 	)
 	if err != nil {
 		return fmt.Errorf("insert security pin setup audit: %w", err)
+	}
+
+	return nil
+}
+
+func insertSecurityPINResetAudit(ctx context.Context, tx *sql.Tx, userID uuid.UUID) error {
+	metadata, err := json.Marshal(map[string]string{
+		"method": "password_reauthentication",
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"user",
+		userID,
+		"security_pin.reset",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert security pin reset audit: %w", err)
 	}
 
 	return nil

@@ -35,6 +35,7 @@ func main() {
 	userService := users.NewService(userStore)
 	pinStore := securitypin.NewPostgresStore(db)
 	pinService := securitypin.NewSetupService(pinStore)
+	pinResetService := securitypin.NewResetService(pinStore)
 	pinValidationService := securitypin.NewValidationService(pinStore)
 	authStore := auth.NewPostgresStore(db)
 	authService := auth.NewService(authStore, auth.NewTokenManager(cfg.JWTSecret, auth.DefaultTokenTTL))
@@ -50,7 +51,7 @@ func main() {
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouter(cfg, userService, userService, pinService, authService, evidenceService, truthService, claimRequestService, claimService),
+		Handler:           server.NewRouter(cfg, userService, userService, pinService, pinResetService, authService, evidenceService, truthService, claimRequestService, claimService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

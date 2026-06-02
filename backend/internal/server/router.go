@@ -32,6 +32,10 @@ type SecurityPINSetter interface {
 	Setup(ctx context.Context, input securitypin.SetupInput) (securitypin.SetupResult, error)
 }
 
+type SecurityPINResetter interface {
+	Reset(ctx context.Context, input securitypin.ResetInput) (securitypin.SetupResult, error)
+}
+
 type Authenticator interface {
 	Login(ctx context.Context, input auth.LoginInput) (auth.LoginResult, error)
 	Authenticate(tokenString string) (uuid.UUID, error)
@@ -61,13 +65,14 @@ type ClaimManager interface {
 	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
 }
 
-func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
+func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
 	mux.HandleFunc("/api/auth/login", loginHandler(authenticator))
 	mux.HandleFunc("/api/account/me", currentAccountHandler(userGetter, authenticator))
 	mux.HandleFunc("/api/account/security-pin", setupSecurityPINHandler(pinSetter, authenticator))
+	mux.HandleFunc("/api/account/security-pin/reset", resetSecurityPINHandler(pinResetter, authenticator))
 	mux.HandleFunc("/api/evidence-items", evidenceItemsHandler(evidenceManager, authenticator))
 	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator))
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
@@ -223,7 +228,46 @@ func setupSecurityPINHandler(pinSetter SecurityPINSetter, authenticator Authenti
 	}
 }
 
+func resetSecurityPINHandler(pinResetter SecurityPINResetter, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, ok := authenticateRequest(w, r, authenticator)
+		if !ok {
+			return
+		}
+
+		var request resetSecurityPINRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			return
+		}
+
+		result, err := pinResetter.Reset(r.Context(), securitypin.ResetInput{
+			UserID:   userID,
+			Password: request.Password,
+			PIN:      request.SecurityPIN,
+		})
+		if err != nil {
+			writeResetSecurityPINError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
 type setupSecurityPINRequest struct {
+	SecurityPIN string `json:"security_pin"`
+}
+
+type resetSecurityPINRequest struct {
+	Password    string `json:"password"`
 	SecurityPIN string `json:"security_pin"`
 }
 
@@ -625,6 +669,21 @@ func writeSetupSecurityPINError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "user_not_found", "User was not found.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to set Security PIN.")
+	}
+}
+
+func writeResetSecurityPINError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, securitypin.ErrInvalidFormat):
+		writeError(w, http.StatusBadRequest, "invalid_security_pin", "Security PIN must be 4-6 digits.")
+	case errors.Is(err, securitypin.ErrInvalidPassword):
+		writeError(w, http.StatusUnauthorized, "invalid_password", "Account password is incorrect.")
+	case errors.Is(err, securitypin.ErrInvalidUser):
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
+	case errors.Is(err, securitypin.ErrUserNotFound):
+		writeError(w, http.StatusNotFound, "user_not_found", "User was not found.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to reset Security PIN.")
 	}
 }
 
