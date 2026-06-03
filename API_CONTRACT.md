@@ -155,7 +155,13 @@ Local MVP webhook endpoints can be configured with:
 go run ./cmd/webhookendpoint -organization "Acme Bank" -type bank -url "https://example.com/kladd/webhooks"
 ```
 
-This stores the endpoint URL only. Actual delivery and retry processing are handled by a later worker module.
+Deliver pending webhook events with:
+
+```powershell
+go run ./cmd/deliverwebhooks
+```
+
+The delivery command sends already-signed safe payloads to active endpoints, marks successful deliveries, and schedules failed attempts for retry.
 
 ## Verification URL
 GET /verify/{claim_id}

@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +25,20 @@ type endpointRecordingStore struct {
 	record   ConfigureEndpointRecord
 	endpoint Endpoint
 	err      error
+}
+
+type deliveryRecordingStore struct {
+	deliveries []PendingDelivery
+	attempts   []DeliveryAttempt
+	dueAt      time.Time
+	limit      int
+	err        error
+}
+
+type recordingSender struct {
+	statusCode int
+	err        error
+	sent       []PendingDelivery
 }
 
 func (executor *recordingExecutor) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
@@ -51,6 +68,25 @@ func (store *endpointRecordingStore) ConfigureEndpoint(ctx context.Context, reco
 		CreatedAt: record.ConfiguredAt,
 		UpdatedAt: record.ConfiguredAt,
 	}, nil
+}
+
+func (store *deliveryRecordingStore) ListPendingDeliveries(ctx context.Context, dueAt time.Time, limit int) ([]PendingDelivery, error) {
+	store.dueAt = dueAt
+	store.limit = limit
+	if store.err != nil {
+		return nil, store.err
+	}
+	return store.deliveries, nil
+}
+
+func (store *deliveryRecordingStore) RecordDeliveryAttempt(ctx context.Context, attempt DeliveryAttempt) error {
+	store.attempts = append(store.attempts, attempt)
+	return store.err
+}
+
+func (sender *recordingSender) Send(ctx context.Context, delivery PendingDelivery) (int, error) {
+	sender.sent = append(sender.sent, delivery)
+	return sender.statusCode, sender.err
 }
 
 func TestEndpointServiceConfigureEndpointPreparesRecord(t *testing.T) {
@@ -127,6 +163,136 @@ func TestEndpointServiceConfigureEndpointValidatesInput(t *testing.T) {
 				t.Fatalf("err = %v, want %v", err, test.err)
 			}
 		})
+	}
+}
+
+func TestDeliveryServiceDeliversPendingWebhook(t *testing.T) {
+	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	deliveryID := uuid.New()
+	store := &deliveryRecordingStore{
+		deliveries: []PendingDelivery{
+			{
+				ID:          deliveryID,
+				EventType:   EventClaimApproved,
+				PayloadJSON: `{"event_type":"claim.approved"}`,
+				Signature:   "sha256=test",
+				EndpointURL: "https://example.com/webhooks",
+			},
+		},
+	}
+	sender := &recordingSender{statusCode: http.StatusOK}
+	service := NewDeliveryServiceWithClock(store, sender, func() time.Time {
+		return now
+	})
+
+	summary, err := service.DeliverPending(context.Background())
+	if err != nil {
+		t.Fatalf("deliver pending: %v", err)
+	}
+
+	if !store.dueAt.Equal(now) {
+		t.Fatalf("due at = %s, want %s", store.dueAt, now)
+	}
+	if store.limit != 25 {
+		t.Fatalf("limit = %d, want 25", store.limit)
+	}
+	if summary.Attempted != 1 || summary.Delivered != 1 || summary.Failed != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if len(sender.sent) != 1 {
+		t.Fatalf("sent = %d, want 1", len(sender.sent))
+	}
+	if len(store.attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(store.attempts))
+	}
+	if store.attempts[0].Status != StatusDelivered {
+		t.Fatalf("attempt status = %q, want %q", store.attempts[0].Status, StatusDelivered)
+	}
+	if store.attempts[0].NextAttemptAt != nil {
+		t.Fatal("delivered attempt should not schedule retry")
+	}
+}
+
+func TestDeliveryServiceSchedulesRetryForFailedWebhook(t *testing.T) {
+	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	store := &deliveryRecordingStore{
+		deliveries: []PendingDelivery{
+			{
+				ID:          uuid.New(),
+				EventType:   EventClaimApproved,
+				PayloadJSON: `{"event_type":"claim.approved"}`,
+				Signature:   "sha256=test",
+				EndpointURL: "https://example.com/webhooks",
+				Attempts:    1,
+			},
+		},
+	}
+	sender := &recordingSender{statusCode: http.StatusInternalServerError}
+	service := NewDeliveryServiceWithClock(store, sender, func() time.Time {
+		return now
+	})
+
+	summary, err := service.DeliverPending(context.Background())
+	if err != nil {
+		t.Fatalf("deliver pending: %v", err)
+	}
+
+	if summary.Attempted != 1 || summary.Delivered != 0 || summary.Failed != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if store.attempts[0].Status != StatusPending {
+		t.Fatalf("attempt status = %q, want %q", store.attempts[0].Status, StatusPending)
+	}
+	if store.attempts[0].NextAttemptAt == nil {
+		t.Fatal("failed attempt should schedule retry")
+	}
+	if !store.attempts[0].NextAttemptAt.Equal(now.Add(5 * time.Minute)) {
+		t.Fatalf("next attempt = %s, want %s", *store.attempts[0].NextAttemptAt, now.Add(5*time.Minute))
+	}
+}
+
+func TestHTTPSenderPostsSignedPayload(t *testing.T) {
+	var eventHeader string
+	var signatureHeader string
+	var deliveryHeader string
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		eventHeader = r.Header.Get("X-Kladd-Event")
+		signatureHeader = r.Header.Get("X-Kladd-Signature")
+		deliveryHeader = r.Header.Get("X-Kladd-Delivery")
+		bodyBytes, _ := io.ReadAll(r.Body)
+		body = string(bodyBytes)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	deliveryID := uuid.New()
+	sender := NewHTTPSender(server.Client())
+	statusCode, err := sender.Send(context.Background(), PendingDelivery{
+		ID:          deliveryID,
+		EventType:   EventClaimApproved,
+		PayloadJSON: `{"event_type":"claim.approved"}`,
+		Signature:   "sha256=test",
+		EndpointURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("send webhook: %v", err)
+	}
+
+	if statusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", statusCode, http.StatusAccepted)
+	}
+	if eventHeader != EventClaimApproved {
+		t.Fatalf("event header = %q, want %q", eventHeader, EventClaimApproved)
+	}
+	if signatureHeader != "sha256=test" {
+		t.Fatalf("signature header = %q", signatureHeader)
+	}
+	if deliveryHeader != deliveryID.String() {
+		t.Fatalf("delivery header = %q", deliveryHeader)
+	}
+	if body != `{"event_type":"claim.approved"}` {
+		t.Fatalf("body = %q", body)
 	}
 }
 

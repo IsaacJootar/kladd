@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -21,7 +23,9 @@ const (
 	EventClaimExpired  = "claim.expired"
 	EventClaimRevoked  = "claim.revoked"
 
-	StatusPending = "pending"
+	StatusPending   = "pending"
+	StatusDelivered = "delivered"
+	StatusFailed    = "failed"
 
 	EndpointStatusActive   = "active"
 	EndpointStatusDisabled = "disabled"
@@ -48,6 +52,7 @@ type Delivery struct {
 	AggregateID    uuid.UUID
 	OrganizationID uuid.UUID
 	Payload        map[string]any
+	PayloadJSON    string
 	Signature      string
 	Status         string
 	CreatedAt      time.Time
@@ -85,6 +90,31 @@ type ConfigureEndpointRecord struct {
 	ConfiguredAt     time.Time
 }
 
+type PendingDelivery struct {
+	ID             uuid.UUID
+	EventType      string
+	OrganizationID uuid.UUID
+	PayloadJSON    string
+	Signature      string
+	EndpointURL    string
+	Attempts       int
+}
+
+type DeliveryAttempt struct {
+	DeliveryID    uuid.UUID
+	Status        string
+	ResponseCode  int
+	ErrorMessage  string
+	AttemptedAt   time.Time
+	NextAttemptAt *time.Time
+}
+
+type DeliverySummary struct {
+	Attempted int `json:"attempted"`
+	Delivered int `json:"delivered"`
+	Failed    int `json:"failed"`
+}
+
 type txExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
@@ -93,9 +123,25 @@ type EndpointStore interface {
 	ConfigureEndpoint(ctx context.Context, record ConfigureEndpointRecord) (Endpoint, error)
 }
 
+type DeliveryStore interface {
+	ListPendingDeliveries(ctx context.Context, dueAt time.Time, limit int) ([]PendingDelivery, error)
+	RecordDeliveryAttempt(ctx context.Context, attempt DeliveryAttempt) error
+}
+
+type Sender interface {
+	Send(ctx context.Context, delivery PendingDelivery) (int, error)
+}
+
 type EndpointService struct {
 	store EndpointStore
 	now   func() time.Time
+}
+
+type DeliveryService struct {
+	store  DeliveryStore
+	sender Sender
+	now    func() time.Time
+	limit  int
 }
 
 func NewEndpointService(store EndpointStore) EndpointService {
@@ -112,6 +158,24 @@ func NewEndpointServiceWithClock(store EndpointStore, now func() time.Time) Endp
 	}
 }
 
+func NewDeliveryService(store DeliveryStore, sender Sender) DeliveryService {
+	return DeliveryService{
+		store:  store,
+		sender: sender,
+		now:    time.Now,
+		limit:  25,
+	}
+}
+
+func NewDeliveryServiceWithClock(store DeliveryStore, sender Sender, now func() time.Time) DeliveryService {
+	return DeliveryService{
+		store:  store,
+		sender: sender,
+		now:    now,
+		limit:  25,
+	}
+}
+
 func (service EndpointService) ConfigureEndpoint(ctx context.Context, input ConfigureEndpointInput) (Endpoint, error) {
 	record, err := service.prepareConfigureRecord(input)
 	if err != nil {
@@ -121,13 +185,45 @@ func (service EndpointService) ConfigureEndpoint(ctx context.Context, input Conf
 	return service.store.ConfigureEndpoint(ctx, record)
 }
 
-func EnqueueClaimEvent(ctx context.Context, tx txExecutor, signingSecret string, event ClaimEvent) error {
-	delivery, err := BuildClaimDelivery(signingSecret, event)
+func (service DeliveryService) DeliverPending(ctx context.Context) (DeliverySummary, error) {
+	now := service.now().UTC()
+	deliveries, err := service.store.ListPendingDeliveries(ctx, now, service.limit)
 	if err != nil {
-		return err
+		return DeliverySummary{}, err
 	}
 
-	payload, err := json.Marshal(delivery.Payload)
+	summary := DeliverySummary{}
+	for _, delivery := range deliveries {
+		summary.Attempted++
+
+		statusCode, err := service.sender.Send(ctx, delivery)
+		attempt := DeliveryAttempt{
+			DeliveryID:   delivery.ID,
+			ResponseCode: statusCode,
+			AttemptedAt:  now,
+		}
+
+		if err == nil && statusCode >= 200 && statusCode < 300 {
+			attempt.Status = StatusDelivered
+			summary.Delivered++
+		} else {
+			attempt.Status = StatusPending
+			attempt.ErrorMessage = deliveryErrorMessage(statusCode, err)
+			nextAttemptAt := now.Add(retryDelay(delivery.Attempts + 1))
+			attempt.NextAttemptAt = &nextAttemptAt
+			summary.Failed++
+		}
+
+		if err := service.store.RecordDeliveryAttempt(ctx, attempt); err != nil {
+			return summary, err
+		}
+	}
+
+	return summary, nil
+}
+
+func EnqueueClaimEvent(ctx context.Context, tx txExecutor, signingSecret string, event ClaimEvent) error {
+	delivery, err := BuildClaimDelivery(signingSecret, event)
 	if err != nil {
 		return err
 	}
@@ -148,7 +244,7 @@ INSERT INTO webhook_deliveries (
 		delivery.EventType,
 		delivery.AggregateID,
 		delivery.OrganizationID,
-		string(payload),
+		delivery.PayloadJSON,
 		delivery.Signature,
 		delivery.Status,
 		delivery.CreatedAt,
@@ -158,6 +254,38 @@ INSERT INTO webhook_deliveries (
 	}
 
 	return nil
+}
+
+type HTTPSender struct {
+	client *http.Client
+}
+
+func NewHTTPSender(client *http.Client) HTTPSender {
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	return HTTPSender{client: client}
+}
+
+func (sender HTTPSender) Send(ctx context.Context, delivery PendingDelivery) (int, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, delivery.EndpointURL, strings.NewReader(delivery.PayloadJSON))
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Kladd-Event", delivery.EventType)
+	request.Header.Set("X-Kladd-Signature", delivery.Signature)
+	request.Header.Set("X-Kladd-Delivery", delivery.ID.String())
+
+	response, err := sender.client.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+
+	return response.StatusCode, nil
 }
 
 func BuildClaimDelivery(signingSecret string, event ClaimEvent) (Delivery, error) {
@@ -181,6 +309,10 @@ func BuildClaimDelivery(signingSecret string, event ClaimEvent) (Delivery, error
 		"occurred_at":       event.OccurredAt.Format(time.RFC3339),
 		"verification_path": "/verify/" + event.ClaimID.String(),
 	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return Delivery{}, err
+	}
 	signature, err := SignPayload(signingSecret, payload)
 	if err != nil {
 		return Delivery{}, err
@@ -192,6 +324,7 @@ func BuildClaimDelivery(signingSecret string, event ClaimEvent) (Delivery, error
 		AggregateID:    event.ClaimID,
 		OrganizationID: event.OrganizationID,
 		Payload:        payload,
+		PayloadJSON:    string(payloadBytes),
 		Signature:      signature,
 		Status:         StatusPending,
 		CreatedAt:      event.OccurredAt,
@@ -214,6 +347,27 @@ func SignPayload(signingSecret string, payload map[string]any) (string, error) {
 	}
 
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func deliveryErrorMessage(statusCode int, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if statusCode > 0 {
+		return fmt.Sprintf("webhook endpoint returned status %d", statusCode)
+	}
+	return "webhook delivery failed"
+}
+
+func retryDelay(attempts int) time.Duration {
+	switch {
+	case attempts <= 1:
+		return 1 * time.Minute
+	case attempts == 2:
+		return 5 * time.Minute
+	default:
+		return 15 * time.Minute
+	}
 }
 
 func (service EndpointService) prepareConfigureRecord(input ConfigureEndpointInput) (ConfigureEndpointRecord, error) {

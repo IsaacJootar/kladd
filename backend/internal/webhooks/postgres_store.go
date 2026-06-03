@@ -3,6 +3,7 @@ package webhooks
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 type PostgresStore struct {
@@ -37,6 +38,80 @@ func (store PostgresStore) ConfigureEndpoint(ctx context.Context, record Configu
 	}
 
 	return endpoint, nil
+}
+
+func (store PostgresStore) ListPendingDeliveries(ctx context.Context, dueAt time.Time, limit int) ([]PendingDelivery, error) {
+	if limit < 1 {
+		limit = 25
+	}
+
+	rows, err := store.db.QueryContext(ctx, `
+SELECT
+    delivery.id,
+    delivery.event_type,
+    delivery.organization_id,
+    delivery.payload_json::text,
+    delivery.signature,
+    endpoint.url,
+    delivery.attempts
+FROM webhook_deliveries delivery
+JOIN organization_webhook_endpoints endpoint ON endpoint.organization_id = delivery.organization_id
+WHERE delivery.status = $1
+    AND endpoint.status = $2
+    AND (delivery.next_attempt_at IS NULL OR delivery.next_attempt_at <= $3)
+ORDER BY delivery.created_at ASC
+LIMIT $4`,
+		StatusPending,
+		EndpointStatusActive,
+		dueAt,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	deliveries := []PendingDelivery{}
+	for rows.Next() {
+		var delivery PendingDelivery
+		if err := rows.Scan(
+			&delivery.ID,
+			&delivery.EventType,
+			&delivery.OrganizationID,
+			&delivery.PayloadJSON,
+			&delivery.Signature,
+			&delivery.EndpointURL,
+			&delivery.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		deliveries = append(deliveries, delivery)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return deliveries, nil
+}
+
+func (store PostgresStore) RecordDeliveryAttempt(ctx context.Context, attempt DeliveryAttempt) error {
+	_, err := store.db.ExecContext(ctx, `
+UPDATE webhook_deliveries
+SET
+    status = $2,
+    attempts = attempts + 1,
+    next_attempt_at = $3,
+    delivered_at = CASE WHEN $2 = $4 THEN $5 ELSE delivered_at END,
+    updated_at = $5
+WHERE id = $1`,
+		attempt.DeliveryID,
+		attempt.Status,
+		attempt.NextAttemptAt,
+		StatusDelivered,
+		attempt.AttemptedAt,
+	)
+	return err
 }
 
 func upsertEndpointOrganization(ctx context.Context, tx *sql.Tx, record ConfigureEndpointRecord) (Organization, error) {

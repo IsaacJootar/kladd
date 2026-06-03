@@ -164,3 +164,13 @@ go run ./cmd/webhookendpoint -organization "Acme Bank" -type bank -url "https://
 ```
 
 This stores the endpoint URL for future webhook delivery. It does not send queued webhook events yet.
+
+## Webhook Delivery
+
+Deliver pending webhook events from the backend directory:
+
+```powershell
+go run ./cmd/deliverwebhooks
+```
+
+The command sends already-signed safe webhook payloads to active organization endpoints, marks successful deliveries, and schedules failed attempts for retry.
