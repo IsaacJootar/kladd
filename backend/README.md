@@ -144,3 +144,13 @@ go run ./cmd/orgkey -organization "Acme Bank" -type bank -name "Local setup"
 ```
 
 The command prints the raw API key once. Kladd stores only the key hash. Use the raw value in `X-Kladd-API-Key` when calling organization endpoints.
+
+## Claim Expiry Sweep
+
+Run the expiry sweep from the backend directory:
+
+```powershell
+go run ./cmd/expireclaims
+```
+
+The command marks due active claims as expired, records audit events, and queues signed `claim.expired` webhook deliveries. Expired claim responses continue to hide proof details.

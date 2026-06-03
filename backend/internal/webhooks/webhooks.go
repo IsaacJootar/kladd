@@ -15,6 +15,7 @@ import (
 
 const (
 	EventClaimApproved = "claim.approved"
+	EventClaimExpired  = "claim.expired"
 	EventClaimRevoked  = "claim.revoked"
 
 	StatusPending = "pending"
@@ -85,7 +86,7 @@ INSERT INTO webhook_deliveries (
 }
 
 func BuildClaimDelivery(signingSecret string, event ClaimEvent) (Delivery, error) {
-	if event.EventType != EventClaimApproved && event.EventType != EventClaimRevoked {
+	if event.EventType != EventClaimApproved && event.EventType != EventClaimExpired && event.EventType != EventClaimRevoked {
 		return Delivery{}, fmt.Errorf("unsupported webhook event type %q", event.EventType)
 	}
 	if event.ClaimID == uuid.Nil || event.ClaimRequestID == uuid.Nil || event.OrganizationID == uuid.Nil {

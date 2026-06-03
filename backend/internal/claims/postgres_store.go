@@ -112,7 +112,7 @@ func (store PostgresStore) Revoke(ctx context.Context, userID uuid.UUID, claimID
 		_ = tx.Rollback()
 	}()
 
-	claim, err := lockClaimForExchangePIN(ctx, tx, userID, claimID)
+	claim, err := lockClaimForRevoke(ctx, tx, userID, claimID)
 	if err != nil {
 		return Claim{}, err
 	}
@@ -160,7 +160,7 @@ func (store PostgresStore) CreateExchangePIN(ctx context.Context, userID uuid.UU
 		_ = tx.Rollback()
 	}()
 
-	claim, err := lockClaimForRevoke(ctx, tx, userID, claimID)
+	claim, err := lockClaimForExchangePIN(ctx, tx, userID, claimID)
 	if err != nil {
 		return ExchangePIN{}, err
 	}
@@ -244,6 +244,45 @@ WHERE ep.pin_hash = $1
 	return claim, nil
 }
 
+func (store PostgresStore) ExpireDue(ctx context.Context, expiredAt time.Time) ([]Claim, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	expiredClaims, err := updateDueClaimsExpired(ctx, tx, expiredAt)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, claim := range expiredClaims {
+		if err := insertClaimExpiredAudit(ctx, tx, claim, expiredAt); err != nil {
+			return nil, err
+		}
+
+		if err := webhooks.EnqueueClaimEvent(ctx, tx, store.webhookSigningSecret, webhooks.ClaimEvent{
+			EventType:      webhooks.EventClaimExpired,
+			ClaimID:        claim.ID,
+			ClaimRequestID: claim.ClaimRequestID,
+			OrganizationID: claim.Organization.ID,
+			Status:         StatusExpired,
+			ExpiresAt:      claim.ExpiresAt,
+			OccurredAt:     expiredAt,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return expiredClaims, nil
+}
+
 func claimSelectQuery() string {
 	return `
 SELECT
@@ -263,6 +302,63 @@ FROM claims c
 JOIN claim_requests cr ON cr.id = c.claim_request_id
 JOIN organizations org ON org.id = cr.organization_id
 `
+}
+
+func updateDueClaimsExpired(ctx context.Context, tx *sql.Tx, expiredAt time.Time) ([]Claim, error) {
+	rows, err := tx.QueryContext(ctx, `
+WITH updated AS (
+    UPDATE claims
+    SET status = $2
+    WHERE status = $3
+        AND expires_at <= $1
+    RETURNING
+        id,
+        claim_request_id,
+        status,
+        issued_at,
+        expires_at,
+        revoked_at
+)
+SELECT
+    updated.id,
+    updated.claim_request_id,
+    updated.status,
+    updated.issued_at,
+    updated.expires_at,
+    updated.revoked_at,
+    cr.purpose,
+    cr.scope_json,
+    org.id,
+    org.name,
+    org.organization_type,
+    org.verification_status
+FROM updated
+JOIN claim_requests cr ON cr.id = updated.claim_request_id
+JOIN organizations org ON org.id = cr.organization_id
+ORDER BY updated.expires_at ASC`,
+		expiredAt,
+		StatusExpired,
+		StatusActive,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	expiredClaims := []Claim{}
+	for rows.Next() {
+		claim, err := scanClaim(rows)
+		if err != nil {
+			return nil, err
+		}
+		expiredClaims = append(expiredClaims, claim)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return expiredClaims, nil
 }
 
 func lockClaimForExchangePIN(ctx context.Context, tx *sql.Tx, userID uuid.UUID, claimID uuid.UUID) (Claim, error) {
@@ -374,6 +470,37 @@ INSERT INTO audit_logs (
 	)
 	if err != nil {
 		return fmt.Errorf("insert claim revoked audit: %w", err)
+	}
+
+	return nil
+}
+
+func insertClaimExpiredAudit(ctx context.Context, tx *sql.Tx, claim Claim, expiredAt time.Time) error {
+	metadata, err := json.Marshal(map[string]string{
+		"claim_id":         claim.ID.String(),
+		"claim_request_id": claim.ClaimRequestID.String(),
+		"expired_at":       expiredAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"system",
+		nil,
+		"claim.expired",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert claim expired audit: %w", err)
 	}
 
 	return nil

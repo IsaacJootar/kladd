@@ -24,6 +24,7 @@ type recordingStore struct {
 	pinHash    string
 	pinExpiry  time.Time
 	pinCreated time.Time
+	expiredAt  time.Time
 }
 
 func (store *recordingStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]Claim, error) {
@@ -87,6 +88,14 @@ func (store *recordingStore) ResolveExchangePIN(ctx context.Context, pinHash str
 	}
 
 	return store.claim, nil
+}
+
+func (store *recordingStore) ExpireDue(ctx context.Context, expiredAt time.Time) ([]Claim, error) {
+	store.expiredAt = expiredAt
+	if store.err != nil {
+		return nil, store.err
+	}
+	return store.claims, nil
 }
 
 func TestServiceListHidesDetailsForExpiredClaims(t *testing.T) {
@@ -352,6 +361,41 @@ func TestServiceResolveExchangePINRejectsInvalidPIN(t *testing.T) {
 	_, err := service.ResolveExchangePIN(context.Background(), "12ab")
 	if !errors.Is(err, ErrInvalidExchangePIN) {
 		t.Fatalf("err = %v, want %v", err, ErrInvalidExchangePIN)
+	}
+}
+
+func TestServiceExpireDueHidesExpiredClaimDetails(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	store := &recordingStore{
+		claims: []Claim{
+			{
+				ID:             uuid.New(),
+				ApprovedTruths: []string{"identity_verified"},
+				Status:         StatusExpired,
+				ExpiresAt:      time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	service := NewServiceWithClock(store, func() time.Time {
+		return now
+	})
+
+	expiredClaims, err := service.ExpireDue(context.Background())
+	if err != nil {
+		t.Fatalf("expire due claims: %v", err)
+	}
+
+	if !store.expiredAt.Equal(now) {
+		t.Fatalf("expired at = %s, want %s", store.expiredAt, now)
+	}
+	if len(expiredClaims) != 1 {
+		t.Fatalf("expired claims = %d, want 1", len(expiredClaims))
+	}
+	if expiredClaims[0].DetailsVisible {
+		t.Fatal("expired claim details should not be visible")
+	}
+	if len(expiredClaims[0].ApprovedTruths) != 0 {
+		t.Fatal("expired claim exposed approved truths")
 	}
 }
 

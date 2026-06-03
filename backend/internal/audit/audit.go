@@ -95,6 +95,8 @@ func eventCopy(eventType string, metadata map[string]any) (string, string) {
 		return "Proof request approved", "A proof request was approved with your Security PIN."
 	case "claim_request.denied":
 		return "Proof request denied", "A proof request was denied. No proof was released."
+	case "claim.expired":
+		return "Proof expired", "A time-bound proof expired and its proof details are hidden."
 	case "claim.revoked":
 		return "Proof revoked", "An active proof was revoked and its proof details are hidden."
 	case "claim.exchange_pin_created":

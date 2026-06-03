@@ -79,6 +79,28 @@ func TestBuildClaimDeliveryRequiresSigningSecret(t *testing.T) {
 	}
 }
 
+func TestBuildClaimDeliveryAcceptsExpiredEvent(t *testing.T) {
+	delivery, err := BuildClaimDelivery("secret", ClaimEvent{
+		EventType:      EventClaimExpired,
+		ClaimID:        uuid.New(),
+		ClaimRequestID: uuid.New(),
+		OrganizationID: uuid.New(),
+		Status:         "expired",
+		ExpiresAt:      time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		OccurredAt:     time.Date(2026, 6, 1, 12, 1, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("build expired delivery: %v", err)
+	}
+
+	if delivery.EventType != EventClaimExpired {
+		t.Fatalf("event type = %q, want %q", delivery.EventType, EventClaimExpired)
+	}
+	if delivery.Payload["status"] != "expired" {
+		t.Fatalf("status = %q, want expired", delivery.Payload["status"])
+	}
+}
+
 func TestEnqueueClaimEventWritesPendingDelivery(t *testing.T) {
 	executor := &recordingExecutor{}
 	claimID := uuid.New()

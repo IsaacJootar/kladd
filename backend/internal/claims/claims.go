@@ -55,6 +55,7 @@ type Store interface {
 	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID, revokedAt time.Time) (Claim, error)
 	CreateExchangePIN(ctx context.Context, userID uuid.UUID, claimID uuid.UUID, pinHash string, expiresAt time.Time, createdAt time.Time) (ExchangePIN, error)
 	ResolveExchangePIN(ctx context.Context, pinHash string, retrievedAt time.Time) (Claim, error)
+	ExpireDue(ctx context.Context, expiredAt time.Time) ([]Claim, error)
 }
 
 type Service struct {
@@ -175,6 +176,15 @@ func (service Service) ResolveExchangePIN(ctx context.Context, pin string) (Clai
 	}
 
 	return service.sanitizeClaim(claim), nil
+}
+
+func (service Service) ExpireDue(ctx context.Context) ([]Claim, error) {
+	expiredClaims, err := service.store.ExpireDue(ctx, service.now())
+	if err != nil {
+		return nil, err
+	}
+
+	return service.sanitizeClaims(expiredClaims), nil
 }
 
 func (service Service) sanitizeClaims(claimList []Claim) []Claim {
