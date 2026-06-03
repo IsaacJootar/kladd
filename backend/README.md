@@ -154,3 +154,13 @@ go run ./cmd/expireclaims
 ```
 
 The command marks due active claims as expired, records audit events, and queues signed `claim.expired` webhook deliveries. Expired claim responses continue to hide proof details.
+
+## Organization Webhook Endpoint
+
+Configure or update an organization's webhook endpoint from the backend directory:
+
+```powershell
+go run ./cmd/webhookendpoint -organization "Acme Bank" -type bank -url "https://example.com/kladd/webhooks"
+```
+
+This stores the endpoint URL for future webhook delivery. It does not send queued webhook events yet.

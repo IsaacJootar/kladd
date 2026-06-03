@@ -7,7 +7,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +22,14 @@ const (
 	EventClaimRevoked  = "claim.revoked"
 
 	StatusPending = "pending"
+
+	EndpointStatusActive   = "active"
+	EndpointStatusDisabled = "disabled"
+)
+
+var (
+	ErrInvalidOrganization = errors.New("organization name is required")
+	ErrInvalidEndpointURL  = errors.New("webhook endpoint url must be http or https")
 )
 
 type ClaimEvent struct {
@@ -42,8 +53,72 @@ type Delivery struct {
 	CreatedAt      time.Time
 }
 
+type Organization struct {
+	ID                 uuid.UUID `json:"id"`
+	Name               string    `json:"name"`
+	OrganizationType   string    `json:"organization_type"`
+	VerificationStatus string    `json:"verification_status"`
+}
+
+type Endpoint struct {
+	ID           uuid.UUID    `json:"id"`
+	Organization Organization `json:"organization"`
+	URL          string       `json:"url"`
+	Status       string       `json:"status"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+}
+
+type ConfigureEndpointInput struct {
+	OrganizationName string
+	OrganizationType string
+	URL              string
+}
+
+type ConfigureEndpointRecord struct {
+	ID               uuid.UUID
+	OrganizationID   uuid.UUID
+	OrganizationName string
+	OrganizationType string
+	URL              string
+	Status           string
+	ConfiguredAt     time.Time
+}
+
 type txExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+type EndpointStore interface {
+	ConfigureEndpoint(ctx context.Context, record ConfigureEndpointRecord) (Endpoint, error)
+}
+
+type EndpointService struct {
+	store EndpointStore
+	now   func() time.Time
+}
+
+func NewEndpointService(store EndpointStore) EndpointService {
+	return EndpointService{
+		store: store,
+		now:   time.Now,
+	}
+}
+
+func NewEndpointServiceWithClock(store EndpointStore, now func() time.Time) EndpointService {
+	return EndpointService{
+		store: store,
+		now:   now,
+	}
+}
+
+func (service EndpointService) ConfigureEndpoint(ctx context.Context, input ConfigureEndpointInput) (Endpoint, error) {
+	record, err := service.prepareConfigureRecord(input)
+	if err != nil {
+		return Endpoint{}, err
+	}
+
+	return service.store.ConfigureEndpoint(ctx, record)
 }
 
 func EnqueueClaimEvent(ctx context.Context, tx txExecutor, signingSecret string, event ClaimEvent) error {
@@ -139,4 +214,44 @@ func SignPayload(signingSecret string, payload map[string]any) (string, error) {
 	}
 
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func (service EndpointService) prepareConfigureRecord(input ConfigureEndpointInput) (ConfigureEndpointRecord, error) {
+	organizationName := strings.TrimSpace(input.OrganizationName)
+	if organizationName == "" {
+		return ConfigureEndpointRecord{}, ErrInvalidOrganization
+	}
+
+	organizationType := strings.TrimSpace(input.OrganizationType)
+	if organizationType == "" {
+		organizationType = "organization"
+	}
+
+	endpointURL, err := normalizeEndpointURL(input.URL)
+	if err != nil {
+		return ConfigureEndpointRecord{}, err
+	}
+
+	return ConfigureEndpointRecord{
+		ID:               uuid.New(),
+		OrganizationID:   uuid.New(),
+		OrganizationName: organizationName,
+		OrganizationType: organizationType,
+		URL:              endpointURL,
+		Status:           EndpointStatusActive,
+		ConfiguredAt:     service.now().UTC(),
+	}, nil
+}
+
+func normalizeEndpointURL(value string) (string, error) {
+	cleaned := strings.TrimSpace(value)
+	parsed, err := url.ParseRequestURI(cleaned)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", ErrInvalidEndpointURL
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return "", ErrInvalidEndpointURL
+	}
+
+	return parsed.String(), nil
 }

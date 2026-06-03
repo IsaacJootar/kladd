@@ -149,6 +149,14 @@ Webhook delivery foundation records signed webhook payloads in an internal outbo
 
 Webhook payloads must not include raw documents, truth values, sensitive identity anchors, Security PIN values, Security PIN hashes, or exchange PIN hashes.
 
+Local MVP webhook endpoints can be configured with:
+
+```powershell
+go run ./cmd/webhookendpoint -organization "Acme Bank" -type bank -url "https://example.com/kladd/webhooks"
+```
+
+This stores the endpoint URL only. Actual delivery and retry processing are handled by a later worker module.
+
 ## Verification URL
 GET /verify/{claim_id}
 

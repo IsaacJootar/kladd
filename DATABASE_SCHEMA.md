@@ -32,6 +32,14 @@
 - revoked_at
 - created_at
 
+### organization_webhook_endpoints
+- id
+- organization_id
+- url
+- status
+- created_at
+- updated_at
+
 ### evidence_items
 - id
 - user_id
