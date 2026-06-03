@@ -113,6 +113,12 @@ POST /api/organization/claim-requests
 
 Requires `X-Kladd-API-Key`.
 
+Local MVP API keys can be created with:
+
+```powershell
+go run ./cmd/orgkey -organization "Acme Bank" -type bank -name "Local setup"
+```
+
 ```json
 {
   "user_email": "ada@example.com",

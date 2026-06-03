@@ -134,3 +134,13 @@ To use a different migrations directory:
 ```powershell
 go run ./cmd/migrate -dir migrations
 ```
+
+## Organization API Keys
+
+Create a local organization API key from the backend directory:
+
+```powershell
+go run ./cmd/orgkey -organization "Acme Bank" -type bank -name "Local setup"
+```
+
+The command prints the raw API key once. Kladd stores only the key hash. Use the raw value in `X-Kladd-API-Key` when calling organization endpoints.
