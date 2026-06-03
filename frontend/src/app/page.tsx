@@ -125,6 +125,14 @@ type TestRequestForm = {
   durationDays: string;
 };
 
+type OrganizationRequestForm = {
+  apiKey: string;
+  userEmail: string;
+  purpose: string;
+  requestedTruths: string[];
+  durationDays: string;
+};
+
 const navItems = ["Home", "My Records", "Requests", "Proofs", "Security"];
 
 const proofOptions = [
@@ -195,6 +203,14 @@ const emptyTestRequestForm: TestRequestForm = {
   durationDays: "30",
 };
 
+const emptyOrganizationRequestForm: OrganizationRequestForm = {
+  apiKey: "",
+  userEmail: "",
+  purpose: "Account opening",
+  requestedTruths: ["identity_verified"],
+  durationDays: "30",
+};
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("register");
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
@@ -217,6 +233,11 @@ export default function Home() {
   const [testRequestForm, setTestRequestForm] = useState(
     emptyTestRequestForm,
   );
+  const [organizationRequestForm, setOrganizationRequestForm] = useState(
+    emptyOrganizationRequestForm,
+  );
+  const [createdOrganizationRequest, setCreatedOrganizationRequest] =
+    useState<ClaimRequest | null>(null);
   const [copiedClaimID, setCopiedClaimID] = useState("");
   const [claimQRCodes, setClaimQRCodes] = useState<Record<string, string>>({});
   const [claimExchangePINs, setClaimExchangePINs] = useState<
@@ -526,6 +547,67 @@ export default function Home() {
       setClaimRequests((requests) => [request, ...requests]);
       setTestRequestForm(emptyTestRequestForm);
       setNotice("Test request created. You can approve it from Pending proof requests.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleCreateOrganizationRequest(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    const apiKey = organizationRequestForm.apiKey.trim();
+    const userEmail = organizationRequestForm.userEmail.trim();
+    const purpose = organizationRequestForm.purpose.trim();
+
+    if (!apiKey) {
+      setError("Enter your organization API key.");
+      return;
+    }
+
+    if (!userEmail) {
+      setError("Enter the user's email address.");
+      return;
+    }
+
+    if (!purpose) {
+      setError("Enter a clear request purpose.");
+      return;
+    }
+
+    if (organizationRequestForm.requestedTruths.length === 0) {
+      setError("Choose at least one proof for the request.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const request = await apiRequest<ClaimRequest>(
+        "/organization/claim-requests",
+        {
+          method: "POST",
+          apiKey,
+          body: JSON.stringify({
+            user_email: userEmail,
+            purpose,
+            requested_truths: organizationRequestForm.requestedTruths,
+            duration_days: Number(organizationRequestForm.durationDays),
+          }),
+        },
+      );
+      setCreatedOrganizationRequest(request);
+      setOrganizationRequestForm((form) => ({
+        ...emptyOrganizationRequestForm,
+        apiKey: form.apiKey,
+      }));
+      setNotice(
+        "Organization request sent. The user must approve it with their Security PIN before any proof is released.",
+      );
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -1143,6 +1225,138 @@ export default function Home() {
                   <SubmitButton disabled={isSubmitting}>Sign in</SubmitButton>
                 </form>
               )}
+            </section>
+
+            <section className="rounded-lg border border-emerald-100 bg-[#f7fbf8] p-5 shadow-sm">
+              <div>
+                <p className="text-sm font-semibold text-emerald-700">
+                  Organization workspace
+                </p>
+                <h2 className="mt-1 text-lg font-semibold tracking-normal">
+                  Request a proof
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Send a request to a user. Kladd will wait for their Security
+                  PIN approval before releasing any proof.
+                </p>
+              </div>
+
+              <form
+                className="mt-5 space-y-4"
+                onSubmit={handleCreateOrganizationRequest}
+              >
+                <TextInput
+                  label="Organization API key"
+                  type="password"
+                  value={organizationRequestForm.apiKey}
+                  onChange={(value) =>
+                    setOrganizationRequestForm((form) => ({
+                      ...form,
+                      apiKey: value,
+                    }))
+                  }
+                  required
+                />
+
+                <TextInput
+                  label="User email"
+                  type="email"
+                  value={organizationRequestForm.userEmail}
+                  onChange={(value) =>
+                    setOrganizationRequestForm((form) => ({
+                      ...form,
+                      userEmail: value,
+                    }))
+                  }
+                  required
+                />
+
+                <TextInput
+                  label="Purpose"
+                  value={organizationRequestForm.purpose}
+                  onChange={(value) =>
+                    setOrganizationRequestForm((form) => ({
+                      ...form,
+                      purpose: value,
+                    }))
+                  }
+                  required
+                />
+
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">
+                    Duration
+                  </span>
+                  <select
+                    value={organizationRequestForm.durationDays}
+                    onChange={(event) =>
+                      setOrganizationRequestForm((form) => ({
+                        ...form,
+                        durationDays: event.target.value,
+                      }))
+                    }
+                    className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
+                  >
+                    <option value="7">7 days</option>
+                    <option value="30">30 days</option>
+                    <option value="90">90 days</option>
+                    <option value="180">180 days</option>
+                  </select>
+                </label>
+
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-semibold text-slate-700">
+                    Proofs
+                  </legend>
+                  <div className="grid gap-2">
+                    {proofOptions.map((proof) => (
+                      <label
+                        key={proof.key}
+                        className="flex items-center gap-2 rounded-md border border-emerald-100 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={organizationRequestForm.requestedTruths.includes(
+                            proof.key,
+                          )}
+                          onChange={(event) =>
+                            setOrganizationRequestForm((form) => ({
+                              ...form,
+                              requestedTruths: event.target.checked
+                                ? [...form.requestedTruths, proof.key]
+                                : form.requestedTruths.filter(
+                                    (truth) => truth !== proof.key,
+                                  ),
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-500"
+                        />
+                        {proof.label}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                <SubmitButton disabled={isSubmitting}>Send request</SubmitButton>
+              </form>
+
+              {createdOrganizationRequest ? (
+                <div className="mt-5 rounded-lg border border-emerald-200 bg-white p-4">
+                  <p className="text-sm font-semibold text-slate-950">
+                    Request created
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    {createdOrganizationRequest.organization.name} requested{" "}
+                    {createdOrganizationRequest.requested_truths
+                      .map(formatProofName)
+                      .join(", ")}
+                    .
+                  </p>
+                  <p className="mt-2 text-xs font-semibold text-emerald-700">
+                    Awaiting user approval
+                  </p>
+                </div>
+              ) : null}
             </section>
 
             <section className="rounded-lg border border-indigo-100 bg-[#f8f7ff] p-5 shadow-sm">
@@ -1823,12 +2037,16 @@ async function apiRequest<T>(
     method: "GET" | "POST";
     body?: string;
     token?: string;
+    apiKey?: string;
   },
 ): Promise<T> {
   const headers = new Headers();
   headers.set("content-type", "application/json");
   if (options.token) {
     headers.set("authorization", `Bearer ${options.token}`);
+  }
+  if (options.apiKey) {
+    headers.set("x-kladd-api-key", options.apiKey);
   }
 
   const response = await fetch(`/api/kladd${path}`, {

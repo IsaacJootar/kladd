@@ -23,11 +23,15 @@ async function proxyRequest(request: NextRequest, context: RouteContext) {
   const headers = new Headers();
   const contentType = request.headers.get("content-type");
   const authorization = request.headers.get("authorization");
+  const apiKey = request.headers.get("x-kladd-api-key");
   if (contentType) {
     headers.set("content-type", contentType);
   }
   if (authorization) {
     headers.set("authorization", authorization);
+  }
+  if (apiKey) {
+    headers.set("x-kladd-api-key", apiKey);
   }
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
