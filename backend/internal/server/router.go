@@ -82,6 +82,11 @@ type OrganizationAuthenticator interface {
 	Authenticate(ctx context.Context, apiKey string) (claimrequests.Organization, error)
 }
 
+type OrganizationAccountManager interface {
+	RegisterAccount(ctx context.Context, input orgauth.RegisterInput) (orgauth.Account, error)
+	Login(ctx context.Context, input orgauth.LoginInput) (orgauth.LoginResult, error)
+}
+
 type OrganizationWebhookEndpointManager interface {
 	ConfigureEndpoint(ctx context.Context, input webhooks.ConfigureEndpointInput) (webhooks.Endpoint, error)
 	GetEndpointForOrganization(ctx context.Context, organizationID uuid.UUID) (webhooks.Endpoint, error)
@@ -115,6 +120,10 @@ func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGett
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
 	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
 	if organizationAuthenticator != nil {
+		if organizationAccountManager, ok := organizationAuthenticator.(OrganizationAccountManager); ok {
+			mux.HandleFunc("/api/organizations", createOrganizationHandler(organizationAccountManager))
+			mux.HandleFunc("/api/organization/auth/login", organizationLoginHandler(organizationAccountManager))
+		}
 		mux.HandleFunc("/api/organization/me", organizationProfileHandler(organizationAuthenticator))
 		mux.HandleFunc("/api/organization/audit-logs", organizationAuditLogsHandler(auditLogLister, organizationAuthenticator))
 		mux.HandleFunc("/api/organization/claim-requests", organizationClaimRequestsHandler(claimRequestManager, userGetter, organizationAuthenticator))
@@ -219,6 +228,76 @@ func loginHandler(authenticator Authenticator) http.HandlerFunc {
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+type createOrganizationRequest struct {
+	Name             string `json:"name"`
+	Email            string `json:"email"`
+	Password         string `json:"password"`
+	OrganizationType string `json:"organization_type"`
+}
+
+type organizationLoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func createOrganizationHandler(organizationAccountManager OrganizationAccountManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var request createOrganizationRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			return
+		}
+
+		account, err := organizationAccountManager.RegisterAccount(r.Context(), orgauth.RegisterInput{
+			Name:             request.Name,
+			Email:            request.Email,
+			Password:         request.Password,
+			OrganizationType: request.OrganizationType,
+		})
+		if err != nil {
+			writeCreateOrganizationError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, account)
+	}
+}
+
+func organizationLoginHandler(organizationAccountManager OrganizationAccountManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var request organizationLoginRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			return
+		}
+
+		result, err := organizationAccountManager.Login(r.Context(), orgauth.LoginInput{
+			Email:    request.Email,
+			Password: request.Password,
+		})
+		if err != nil {
+			writeOrganizationLoginError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	}
 }
 
 func currentAccountHandler(userGetter UserGetter, authenticator Authenticator) http.HandlerFunc {
@@ -980,6 +1059,30 @@ func writeLoginError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Email or password is incorrect.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to log in.")
+	}
+}
+
+func writeCreateOrganizationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, orgauth.ErrInvalidOrganization):
+		writeError(w, http.StatusBadRequest, "invalid_organization", "Organization name is required.")
+	case errors.Is(err, orgauth.ErrInvalidEmail):
+		writeError(w, http.StatusBadRequest, "invalid_email", "A valid organization email is required.")
+	case errors.Is(err, orgauth.ErrInvalidPassword):
+		writeError(w, http.StatusBadRequest, "invalid_password", "Password must be at least 8 characters.")
+	case errors.Is(err, orgauth.ErrEmailTaken):
+		writeError(w, http.StatusConflict, "organization_email_taken", "Organization email is already registered.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to create organization.")
+	}
+}
+
+func writeOrganizationLoginError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, orgauth.ErrInvalidCredentials):
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Organization email or password is incorrect.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to log in organization.")
 	}
 }
 

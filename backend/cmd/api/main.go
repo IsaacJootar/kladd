@@ -54,7 +54,7 @@ func main() {
 	claimStore := claims.NewPostgresStore(db, cfg.WebhookSigningSecret)
 	claimService := claims.NewService(claimStore)
 	orgAuthStore := orgauth.NewPostgresStore(db)
-	orgAuthService := orgauth.NewService(orgAuthStore)
+	orgAuthService := orgauth.NewServiceWithTokenManager(orgAuthStore, auth.NewTokenManager(cfg.JWTSecret, auth.DefaultTokenTTL))
 	webhookStore := webhooks.NewPostgresStore(db)
 	webhookEndpointService := webhooks.NewEndpointService(webhookStore)
 

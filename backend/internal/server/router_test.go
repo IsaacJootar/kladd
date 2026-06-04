@@ -316,9 +316,13 @@ func (manager *fakeClaimManager) ResolveExchangePIN(ctx context.Context, exchang
 }
 
 type fakeOrganizationAuthenticator struct {
-	organization claimrequests.Organization
-	err          error
-	apiKey       string
+	organization  claimrequests.Organization
+	account       orgauth.Account
+	loginResult   orgauth.LoginResult
+	err           error
+	apiKey        string
+	registerInput orgauth.RegisterInput
+	loginInput    orgauth.LoginInput
 }
 
 func (authenticator *fakeOrganizationAuthenticator) Authenticate(ctx context.Context, apiKey string) (claimrequests.Organization, error) {
@@ -327,6 +331,22 @@ func (authenticator *fakeOrganizationAuthenticator) Authenticate(ctx context.Con
 		return claimrequests.Organization{}, authenticator.err
 	}
 	return authenticator.organization, nil
+}
+
+func (authenticator *fakeOrganizationAuthenticator) RegisterAccount(ctx context.Context, input orgauth.RegisterInput) (orgauth.Account, error) {
+	authenticator.registerInput = input
+	if authenticator.err != nil {
+		return orgauth.Account{}, authenticator.err
+	}
+	return authenticator.account, nil
+}
+
+func (authenticator *fakeOrganizationAuthenticator) Login(ctx context.Context, input orgauth.LoginInput) (orgauth.LoginResult, error) {
+	authenticator.loginInput = input
+	if authenticator.err != nil {
+		return orgauth.LoginResult{}, authenticator.err
+	}
+	return authenticator.loginResult, nil
 }
 
 type fakeWebhookEndpointManager struct {
@@ -568,6 +588,134 @@ func TestLoginHandlerRequiresPost(t *testing.T) {
 
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestCreateOrganizationHandlerCreatesOrganizationAccount(t *testing.T) {
+	orgID := uuid.New()
+	organizationAuthenticator := &fakeOrganizationAuthenticator{
+		account: orgauth.Account{
+			ID:                 orgID,
+			Name:               "Acme Bank",
+			Email:              "admin@example.com",
+			OrganizationType:   "bank",
+			VerificationStatus: "unverified",
+			CreatedAt:          time.Now(),
+		},
+	}
+	router := NewRouterWithOrganizationAPI(config.Config{}, &fakeUserCreator{}, &fakeUserGetter{}, &fakeSecurityPINSetter{}, &fakeSecurityPINResetter{}, &fakeAuthenticator{}, &fakeEvidenceManager{}, &fakeAuditLogLister{}, &fakeTruthDefinitionLister{}, &fakeClaimRequestManager{}, &fakeClaimManager{}, organizationAuthenticator)
+
+	body := `{"name":"Acme Bank","email":"admin@example.com","password":"strong-password","organization_type":"bank"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/organizations", strings.NewReader(body))
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusCreated, response.Body.String())
+	}
+	if organizationAuthenticator.registerInput.Name != "Acme Bank" {
+		t.Fatalf("name = %q, want Acme Bank", organizationAuthenticator.registerInput.Name)
+	}
+	if organizationAuthenticator.registerInput.Password != "strong-password" {
+		t.Fatal("expected password to be passed to organization auth service")
+	}
+
+	var account orgauth.Account
+	if err := json.Unmarshal(response.Body.Bytes(), &account); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if account.ID != orgID {
+		t.Fatalf("organization id = %s, want %s", account.ID, orgID)
+	}
+	if strings.Contains(response.Body.String(), "password") {
+		t.Fatalf("response leaked password material: %s", response.Body.String())
+	}
+}
+
+func TestCreateOrganizationHandlerMapsValidationErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "invalid name", err: orgauth.ErrInvalidOrganization, status: http.StatusBadRequest},
+		{name: "invalid email", err: orgauth.ErrInvalidEmail, status: http.StatusBadRequest},
+		{name: "invalid password", err: orgauth.ErrInvalidPassword, status: http.StatusBadRequest},
+		{name: "email taken", err: orgauth.ErrEmailTaken, status: http.StatusConflict},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			router := NewRouterWithOrganizationAPI(config.Config{}, &fakeUserCreator{}, &fakeUserGetter{}, &fakeSecurityPINSetter{}, &fakeSecurityPINResetter{}, &fakeAuthenticator{}, &fakeEvidenceManager{}, &fakeAuditLogLister{}, &fakeTruthDefinitionLister{}, &fakeClaimRequestManager{}, &fakeClaimManager{}, &fakeOrganizationAuthenticator{err: test.err})
+			request := httptest.NewRequest(http.MethodPost, "/api/organizations", strings.NewReader(`{"name":"Acme Bank","email":"admin@example.com","password":"strong-password"}`))
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+		})
+	}
+}
+
+func TestOrganizationLoginHandlerLogsOrganizationIn(t *testing.T) {
+	orgID := uuid.New()
+	organizationAuthenticator := &fakeOrganizationAuthenticator{
+		loginResult: orgauth.LoginResult{
+			AccessToken: "org-token",
+			TokenType:   auth.TokenTypeBearer,
+			ExpiresAt:   time.Now().Add(time.Hour),
+			Organization: orgauth.Account{
+				ID:                 orgID,
+				Name:               "Acme Bank",
+				Email:              "admin@example.com",
+				OrganizationType:   "bank",
+				VerificationStatus: "unverified",
+				CreatedAt:          time.Now(),
+			},
+		},
+	}
+	router := NewRouterWithOrganizationAPI(config.Config{}, &fakeUserCreator{}, &fakeUserGetter{}, &fakeSecurityPINSetter{}, &fakeSecurityPINResetter{}, &fakeAuthenticator{}, &fakeEvidenceManager{}, &fakeAuditLogLister{}, &fakeTruthDefinitionLister{}, &fakeClaimRequestManager{}, &fakeClaimManager{}, organizationAuthenticator)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/organization/auth/login", strings.NewReader(`{"email":"admin@example.com","password":"strong-password"}`))
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if organizationAuthenticator.loginInput.Email != "admin@example.com" {
+		t.Fatalf("email = %q, want admin@example.com", organizationAuthenticator.loginInput.Email)
+	}
+	if organizationAuthenticator.loginInput.Password != "strong-password" {
+		t.Fatal("expected password to be passed to organization auth service")
+	}
+
+	var result orgauth.LoginResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.AccessToken != "org-token" {
+		t.Fatalf("access token = %q, want org-token", result.AccessToken)
+	}
+	if result.Organization.ID != orgID {
+		t.Fatalf("organization id = %s, want %s", result.Organization.ID, orgID)
+	}
+}
+
+func TestOrganizationLoginHandlerRejectsInvalidCredentials(t *testing.T) {
+	router := NewRouterWithOrganizationAPI(config.Config{}, &fakeUserCreator{}, &fakeUserGetter{}, &fakeSecurityPINSetter{}, &fakeSecurityPINResetter{}, &fakeAuthenticator{}, &fakeEvidenceManager{}, &fakeAuditLogLister{}, &fakeTruthDefinitionLister{}, &fakeClaimRequestManager{}, &fakeClaimManager{}, &fakeOrganizationAuthenticator{err: orgauth.ErrInvalidCredentials})
+
+	request := httptest.NewRequest(http.MethodPost, "/api/organization/auth/login", strings.NewReader(`{"email":"admin@example.com","password":"wrong-password"}`))
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
 }
 
