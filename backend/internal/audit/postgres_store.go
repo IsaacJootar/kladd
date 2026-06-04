@@ -47,6 +47,37 @@ LIMIT $2`,
 	return records, nil
 }
 
+func (store PostgresStore) ListForOrganization(ctx context.Context, organizationID uuid.UUID, limit int) ([]Record, error) {
+	rows, err := store.db.QueryContext(ctx, `
+SELECT id, event_type, metadata_json, created_at
+FROM audit_logs
+WHERE actor_type = 'organization' AND actor_id = $1
+ORDER BY created_at DESC
+LIMIT $2`,
+		organizationID,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := []Record{}
+	for rows.Next() {
+		record, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return records, nil
+}
+
 type recordScanner interface {
 	Scan(dest ...any) error
 }

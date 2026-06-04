@@ -11,7 +11,8 @@ import (
 )
 
 var (
-	ErrInvalidUser = errors.New("user_id is required")
+	ErrInvalidUser           = errors.New("user_id is required")
+	ErrInvalidOrganizationID = errors.New("organization_id is required")
 )
 
 type Event struct {
@@ -31,6 +32,7 @@ type Record struct {
 
 type Store interface {
 	ListForUser(ctx context.Context, userID uuid.UUID, limit int) ([]Record, error)
+	ListForOrganization(ctx context.Context, organizationID uuid.UUID, limit int) ([]Record, error)
 }
 
 type Service struct {
@@ -51,6 +53,24 @@ func (service Service) ListForUser(ctx context.Context, userID uuid.UUID) ([]Eve
 	}
 
 	records, err := service.store.ListForUser(ctx, userID, service.limit)
+	if err != nil {
+		return nil, err
+	}
+
+	events := make([]Event, 0, len(records))
+	for _, record := range records {
+		events = append(events, formatEvent(record))
+	}
+
+	return events, nil
+}
+
+func (service Service) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]Event, error) {
+	if organizationID == uuid.Nil {
+		return nil, ErrInvalidOrganizationID
+	}
+
+	records, err := service.store.ListForOrganization(ctx, organizationID, service.limit)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +123,8 @@ func eventCopy(eventType string, metadata map[string]any) (string, string) {
 		return "Exchange PIN created", "A temporary verification PIN was created for an active proof."
 	case "claim.exchange_pin_resolved":
 		return "Exchange PIN used", "A temporary verification PIN opened a proof status page."
+	case "webhook.endpoint_configured":
+		return "Webhook endpoint saved", "A webhook endpoint was saved for organization updates."
 	default:
 		return "Activity recorded", "A Kladd account activity was recorded."
 	}

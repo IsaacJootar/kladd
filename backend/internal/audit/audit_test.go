@@ -12,14 +12,24 @@ import (
 )
 
 type recordingStore struct {
-	records []Record
-	userID  uuid.UUID
-	limit   int
-	err     error
+	records        []Record
+	userID         uuid.UUID
+	organizationID uuid.UUID
+	limit          int
+	err            error
 }
 
 func (store *recordingStore) ListForUser(ctx context.Context, userID uuid.UUID, limit int) ([]Record, error) {
 	store.userID = userID
+	store.limit = limit
+	if store.err != nil {
+		return nil, store.err
+	}
+	return store.records, nil
+}
+
+func (store *recordingStore) ListForOrganization(ctx context.Context, organizationID uuid.UUID, limit int) ([]Record, error) {
+	store.organizationID = organizationID
 	store.limit = limit
 	if store.err != nil {
 		return nil, store.err
@@ -84,6 +94,58 @@ func TestServiceListsSafeUserEvents(t *testing.T) {
 	}
 }
 
+func TestServiceListsSafeOrganizationEvents(t *testing.T) {
+	organizationID := uuid.New()
+	store := &recordingStore{
+		records: []Record{
+			{
+				ID:        uuid.New(),
+				EventType: "claim_request.created",
+				Metadata: map[string]any{
+					"requested_truths": []any{"identity_verified"},
+					"raw_document":     "hidden.pdf",
+				},
+				CreatedAt: time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
+			},
+			{
+				ID:        uuid.New(),
+				EventType: "webhook.endpoint_configured",
+				Metadata: map[string]any{
+					"url":       "https://example.com/kladd/webhooks",
+					"signature": "sha256=hidden",
+				},
+				CreatedAt: time.Date(2026, 6, 4, 13, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	service := NewService(store)
+
+	events, err := service.ListForOrganization(context.Background(), organizationID)
+	if err != nil {
+		t.Fatalf("list organization events: %v", err)
+	}
+
+	if store.organizationID != organizationID {
+		t.Fatalf("organization id = %s, want %s", store.organizationID, organizationID)
+	}
+	if store.limit != 20 {
+		t.Fatalf("limit = %d, want 20", store.limit)
+	}
+	if events[1].Title != "Webhook endpoint saved" {
+		t.Fatalf("title = %q, want Webhook endpoint saved", events[1].Title)
+	}
+
+	payload, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("marshal events: %v", err)
+	}
+	for _, forbidden := range []string{"metadata", "raw_document", "signature", "security_pin", "api_key", "key_hash", "truth_value"} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("events response exposed forbidden value %q", forbidden)
+		}
+	}
+}
+
 func TestServiceHandlesMixedAuditMetadataValues(t *testing.T) {
 	service := NewService(&recordingStore{
 		records: []Record{
@@ -115,6 +177,15 @@ func TestServiceRequiresUser(t *testing.T) {
 	_, err := service.ListForUser(context.Background(), uuid.Nil)
 	if !errors.Is(err, ErrInvalidUser) {
 		t.Fatalf("error = %v, want %v", err, ErrInvalidUser)
+	}
+}
+
+func TestServiceRequiresOrganization(t *testing.T) {
+	service := NewService(&recordingStore{})
+
+	_, err := service.ListForOrganization(context.Background(), uuid.Nil)
+	if !errors.Is(err, ErrInvalidOrganizationID) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidOrganizationID)
 	}
 }
 
