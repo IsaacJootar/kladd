@@ -3,10 +3,14 @@ package orgauth
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type PostgresStore struct {
@@ -94,6 +98,97 @@ WHERE key_hash = $1`,
 	return organization, nil
 }
 
+func (store PostgresStore) RegisterAccount(ctx context.Context, record RegisterRecord) (Account, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Account{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	account, err := insertOrganizationAccount(ctx, tx, record)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return Account{}, ErrEmailTaken
+		}
+		return Account{}, err
+	}
+
+	if err := insertOrganizationCreatedAudit(ctx, tx, account); err != nil {
+		return Account{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Account{}, err
+	}
+
+	return account, nil
+}
+
+func (store PostgresStore) FindCredentialsByEmail(ctx context.Context, email string) (Credentials, error) {
+	var credentials Credentials
+	err := store.db.QueryRowContext(ctx, `
+SELECT
+    id,
+    name,
+    email,
+    password_hash,
+    organization_type,
+    verification_status,
+    created_at
+FROM organizations
+WHERE email = $1
+    AND password_hash IS NOT NULL`,
+		email,
+	).Scan(
+		&credentials.Account.ID,
+		&credentials.Account.Name,
+		&credentials.Account.Email,
+		&credentials.PasswordHash,
+		&credentials.Account.OrganizationType,
+		&credentials.Account.VerificationStatus,
+		&credentials.Account.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Credentials{}, ErrInvalidCredentials
+		}
+		return Credentials{}, err
+	}
+
+	return credentials, nil
+}
+
+func (store PostgresStore) RecordLogin(ctx context.Context, account Account) error {
+	metadata, err := json.Marshal(map[string]string{
+		"method": "password",
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = store.db.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"organization",
+		account.ID,
+		"organization.login",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert organization login audit: %w", err)
+	}
+
+	return nil
+}
+
 func upsertOrganization(ctx context.Context, tx *sql.Tx, record IssueRecord) (claimrequests.Organization, error) {
 	var organization claimrequests.Organization
 	err := tx.QueryRowContext(ctx, `
@@ -151,4 +246,75 @@ RETURNING id, name, key_prefix, created_at`,
 
 	issued.Organization = organization
 	return issued, nil
+}
+
+func insertOrganizationAccount(ctx context.Context, tx *sql.Tx, record RegisterRecord) (Account, error) {
+	var account Account
+	err := tx.QueryRowContext(ctx, `
+INSERT INTO organizations (
+    id,
+    name,
+    email,
+    password_hash,
+    organization_type,
+    verification_status,
+    created_at,
+    updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+RETURNING id, name, email, organization_type, verification_status, created_at`,
+		record.ID,
+		record.Name,
+		record.Email,
+		record.PasswordHash,
+		record.OrganizationType,
+		record.VerificationStatus,
+		record.CreatedAt,
+	).Scan(
+		&account.ID,
+		&account.Name,
+		&account.Email,
+		&account.OrganizationType,
+		&account.VerificationStatus,
+		&account.CreatedAt,
+	)
+	if err != nil {
+		return Account{}, err
+	}
+
+	return account, nil
+}
+
+func insertOrganizationCreatedAudit(ctx context.Context, tx *sql.Tx, account Account) error {
+	metadata, err := json.Marshal(map[string]string{
+		"email":             account.Email,
+		"organization_type": account.OrganizationType,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"organization",
+		account.ID,
+		"organization.created",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert organization created audit: %w", err)
+	}
+
+	return nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

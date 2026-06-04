@@ -4,16 +4,23 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/IsaacJootar/kladd/backend/internal/auth"
 	"github.com/IsaacJootar/kladd/backend/internal/claimrequests"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type recordingStore struct {
 	keyHash      string
 	record       IssueRecord
+	register     RegisterRecord
 	organization claimrequests.Organization
 	issued       IssuedAPIKey
+	account      Account
+	credentials  Credentials
+	loginAccount Account
 	err          error
 }
 
@@ -44,6 +51,36 @@ func (store *recordingStore) IssueAPIKey(ctx context.Context, record IssueRecord
 		KeyPrefix: record.KeyPrefix,
 		CreatedAt: record.CreatedAt,
 	}, nil
+}
+
+func (store *recordingStore) RegisterAccount(ctx context.Context, record RegisterRecord) (Account, error) {
+	store.register = record
+	if store.err != nil {
+		return Account{}, store.err
+	}
+	if store.account.ID != uuid.Nil {
+		return store.account, nil
+	}
+	return Account{
+		ID:                 record.ID,
+		Name:               record.Name,
+		Email:              record.Email,
+		OrganizationType:   record.OrganizationType,
+		VerificationStatus: record.VerificationStatus,
+		CreatedAt:          record.CreatedAt,
+	}, nil
+}
+
+func (store *recordingStore) FindCredentialsByEmail(ctx context.Context, email string) (Credentials, error) {
+	if store.err != nil {
+		return Credentials{}, store.err
+	}
+	return store.credentials, nil
+}
+
+func (store *recordingStore) RecordLogin(ctx context.Context, account Account) error {
+	store.loginAccount = account
+	return store.err
 }
 
 func TestServiceAuthenticateHashesAPIKey(t *testing.T) {
@@ -148,5 +185,127 @@ func TestServiceIssueAPIKeyValidatesInput(t *testing.T) {
 				t.Fatalf("err = %v, want %v", err, test.err)
 			}
 		})
+	}
+}
+
+func TestServiceRegisterAccountHashesPassword(t *testing.T) {
+	store := &recordingStore{}
+	service := NewService(store)
+
+	account, err := service.RegisterAccount(context.Background(), RegisterInput{
+		Name:             " Acme Bank ",
+		Email:            " Admin@Example.COM ",
+		Password:         "strong-password",
+		OrganizationType: "bank",
+	})
+	if err != nil {
+		t.Fatalf("register account: %v", err)
+	}
+
+	if account.Name != "Acme Bank" {
+		t.Fatalf("name = %q, want Acme Bank", account.Name)
+	}
+	if account.Email != "admin@example.com" {
+		t.Fatalf("email = %q, want admin@example.com", account.Email)
+	}
+	if store.register.PasswordHash == "" || store.register.PasswordHash == "strong-password" {
+		t.Fatal("expected hashed password, not raw password")
+	}
+	if bcrypt.CompareHashAndPassword([]byte(store.register.PasswordHash), []byte("strong-password")) != nil {
+		t.Fatal("stored password hash does not match password")
+	}
+	if store.register.VerificationStatus != "unverified" {
+		t.Fatalf("verification status = %q, want unverified", store.register.VerificationStatus)
+	}
+}
+
+func TestServiceRegisterAccountValidatesInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input RegisterInput
+		err   error
+	}{
+		{name: "missing name", input: RegisterInput{Email: "admin@example.com", Password: "strong-password"}, err: ErrInvalidOrganization},
+		{name: "bad email", input: RegisterInput{Name: "Acme Bank", Email: "bad", Password: "strong-password"}, err: ErrInvalidEmail},
+		{name: "short password", input: RegisterInput{Name: "Acme Bank", Email: "admin@example.com", Password: "short"}, err: ErrInvalidPassword},
+	}
+
+	service := NewService(&recordingStore{})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := service.RegisterAccount(context.Background(), test.input)
+			if !errors.Is(err, test.err) {
+				t.Fatalf("err = %v, want %v", err, test.err)
+			}
+		})
+	}
+}
+
+func TestServiceLoginIssuesTokenAndRecordsAudit(t *testing.T) {
+	orgID := uuid.New()
+	hash, err := bcrypt.GenerateFromPassword([]byte("strong-password"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	store := &recordingStore{
+		credentials: Credentials{
+			Account: Account{
+				ID:                 orgID,
+				Name:               "Acme Bank",
+				Email:              "admin@example.com",
+				OrganizationType:   "bank",
+				VerificationStatus: "unverified",
+				CreatedAt:          now,
+			},
+			PasswordHash: string(hash),
+		},
+	}
+	service := NewServiceWithTokenManager(store, auth.NewTokenManagerWithClock("test-secret", time.Hour, func() time.Time {
+		return now
+	}))
+
+	result, err := service.Login(context.Background(), LoginInput{
+		Email:    " Admin@Example.COM ",
+		Password: "strong-password",
+	})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	if result.AccessToken == "" {
+		t.Fatal("expected access token")
+	}
+	if result.TokenType != auth.TokenTypeBearer {
+		t.Fatalf("token type = %q, want %q", result.TokenType, auth.TokenTypeBearer)
+	}
+	if result.Organization.ID != orgID {
+		t.Fatalf("organization id = %s, want %s", result.Organization.ID, orgID)
+	}
+	if store.loginAccount.ID != orgID {
+		t.Fatalf("login audit organization id = %s, want %s", store.loginAccount.ID, orgID)
+	}
+}
+
+func TestServiceLoginRejectsBadPassword(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("strong-password"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	store := &recordingStore{
+		credentials: Credentials{
+			Account:      Account{ID: uuid.New(), Email: "admin@example.com"},
+			PasswordHash: string(hash),
+		},
+	}
+	service := NewServiceWithTokenManager(store, auth.NewTokenManager("test-secret", time.Hour))
+
+	_, err = service.Login(context.Background(), LoginInput{
+		Email:    "admin@example.com",
+		Password: "wrong-password",
+	})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("err = %v, want %v", err, ErrInvalidCredentials)
 	}
 }
