@@ -21,7 +21,10 @@
 
 ## Core Endpoints
 - POST /api/claim-requests
+- GET /api/organization/me
 - POST /api/organization/claim-requests
+- GET /api/organization/claim-requests
+- GET /api/organization/claims
 - GET /api/claim-requests/{id}
 - POST /api/claim-requests/{id}/approve
 - POST /api/claim-requests/{id}/deny
@@ -109,6 +112,18 @@ Truth definition responses return registry metadata only. They must not include 
 ```
 
 ## Organization Claim Request
+GET /api/organization/me
+
+Requires `X-Kladd-API-Key`.
+
+Returns safe organization profile fields only:
+- id
+- name
+- organization_type
+- verification_status
+
+Responses must not include API keys, API key hashes, raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, or truth values.
+
 POST /api/organization/claim-requests
 
 Requires `X-Kladd-API-Key`.
@@ -129,6 +144,18 @@ go run ./cmd/orgkey -organization "Acme Bank" -type bank -name "Local setup"
 ```
 
 This creates a pending claim request for the target user. It must not issue a claim or release truths. The user must still approve with their Security PIN before any claim becomes active.
+
+GET /api/organization/claim-requests
+
+Requires `X-Kladd-API-Key`.
+
+Returns claim requests created by the authenticated organization. Responses include request metadata, purpose, requested proof types, status, and expiry only. They must not include raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, API key hashes, or truth values.
+
+GET /api/organization/claims
+
+Requires `X-Kladd-API-Key`.
+
+Returns claims belonging to the authenticated organization. Active claims may show approved proof types. Expired or revoked claims must hide proof details. Responses must not include raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, API key hashes, exchange PIN hashes, or truth values.
 
 ## Webhook Events
 - claim.approved

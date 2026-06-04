@@ -16,6 +16,13 @@ type User = {
   created_at: string;
 };
 
+type Organization = {
+  id: string;
+  name: string;
+  organization_type: string;
+  verification_status: string;
+};
+
 type LoginResponse = {
   access_token: string;
   token_type: string;
@@ -46,12 +53,7 @@ type EvidenceListResponse = {
 
 type ClaimRequest = {
   id: string;
-  organization: {
-    id: string;
-    name: string;
-    organization_type: string;
-    verification_status: string;
-  };
+  organization: Organization;
   purpose: string;
   requested_truths: string[];
   status: string;
@@ -73,12 +75,7 @@ type ApprovalResponse = {
 type Claim = {
   id: string;
   claim_request_id: string;
-  organization: {
-    id: string;
-    name: string;
-    organization_type: string;
-    verification_status: string;
-  };
+  organization: Organization;
   purpose: string;
   approved_truths?: string[];
   status: string;
@@ -238,6 +235,12 @@ export default function Home() {
   );
   const [createdOrganizationRequest, setCreatedOrganizationRequest] =
     useState<ClaimRequest | null>(null);
+  const [organizationProfile, setOrganizationProfile] =
+    useState<Organization | null>(null);
+  const [organizationClaimRequests, setOrganizationClaimRequests] = useState<
+    ClaimRequest[]
+  >([]);
+  const [organizationClaims, setOrganizationClaims] = useState<Claim[]>([]);
   const [copiedClaimID, setCopiedClaimID] = useState("");
   const [claimQRCodes, setClaimQRCodes] = useState<Record<string, string>>({});
   const [claimExchangePINs, setClaimExchangePINs] = useState<
@@ -257,6 +260,21 @@ export default function Home() {
   const activeClaims = useMemo(
     () => claims.filter((claim) => claim.status === "active"),
     [claims],
+  );
+  const organizationPendingRequests = useMemo(
+    () =>
+      organizationClaimRequests.filter(
+        (request) => request.status === "pending_approval",
+      ),
+    [organizationClaimRequests],
+  );
+  const organizationActiveClaims = useMemo(
+    () => organizationClaims.filter((claim) => claim.status === "active"),
+    [organizationClaims],
+  );
+  const organizationClosedClaims = useMemo(
+    () => organizationClaims.filter((claim) => claim.status !== "active"),
+    [organizationClaims],
   );
 
   const statusCards = useMemo(
@@ -601,6 +619,11 @@ export default function Home() {
         },
       );
       setCreatedOrganizationRequest(request);
+      setOrganizationProfile((profile) => profile ?? request.organization);
+      setOrganizationClaimRequests((requests) => [
+        request,
+        ...requests.filter((item) => item.id !== request.id),
+      ]);
       setOrganizationRequestForm((form) => ({
         ...emptyOrganizationRequestForm,
         apiKey: form.apiKey,
@@ -608,6 +631,43 @@ export default function Home() {
       setNotice(
         "Organization request sent. The user must approve it with their Security PIN before any proof is released.",
       );
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleLoadOrganizationWorkspace() {
+    const apiKey = organizationRequestForm.apiKey.trim();
+    if (!apiKey) {
+      setError("Enter your organization API key.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const [profile, requestsResponse, claimsResponse] = await Promise.all([
+        apiRequest<Organization>("/organization/me", {
+          method: "GET",
+          apiKey,
+        }),
+        apiRequest<ClaimRequestListResponse>("/organization/claim-requests", {
+          method: "GET",
+          apiKey,
+        }),
+        apiRequest<ClaimListResponse>("/organization/claims", {
+          method: "GET",
+          apiKey,
+        }),
+      ]);
+
+      setOrganizationProfile(profile);
+      setOrganizationClaimRequests(requestsResponse.items);
+      setOrganizationClaims(claimsResponse.items);
+      setNotice("Organization workspace loaded.");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -1258,6 +1318,15 @@ export default function Home() {
                   required
                 />
 
+                <button
+                  type="button"
+                  onClick={handleLoadOrganizationWorkspace}
+                  disabled={isSubmitting}
+                  className="h-10 w-full rounded-md border border-emerald-200 bg-white px-4 text-sm font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
+                >
+                  Load workspace
+                </button>
+
                 <TextInput
                   label="User email"
                   type="email"
@@ -1355,6 +1424,57 @@ export default function Home() {
                   <p className="mt-2 text-xs font-semibold text-emerald-700">
                     Awaiting user approval
                   </p>
+                </div>
+              ) : null}
+
+              {organizationProfile ? (
+                <div className="mt-5 space-y-4 border-t border-emerald-100 pt-5">
+                  <div className="rounded-lg border border-emerald-200 bg-white p-4">
+                    <p className="text-sm font-semibold text-slate-950">
+                      {organizationProfile.name}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {formatCategory(organizationProfile.organization_type)}
+                    </p>
+                    <span className="mt-3 inline-flex w-fit rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-800">
+                      {formatRecordStatus(
+                        organizationProfile.verification_status,
+                      )}
+                    </span>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <OrganizationMetric
+                      label="Waiting"
+                      value={String(organizationPendingRequests.length)}
+                    />
+                    <OrganizationMetric
+                      label="Active"
+                      value={String(organizationActiveClaims.length)}
+                    />
+                    <OrganizationMetric
+                      label="Closed"
+                      value={String(organizationClosedClaims.length)}
+                    />
+                  </div>
+
+                  <OrganizationRequestList
+                    title="Pending requests"
+                    emptyText="No user approvals are waiting."
+                    requests={organizationPendingRequests}
+                  />
+
+                  <OrganizationClaimList
+                    title="Active proofs"
+                    emptyText="No active proofs yet."
+                    claims={organizationActiveClaims}
+                  />
+
+                  <OrganizationClaimList
+                    title="Closed proofs"
+                    emptyText="No expired or revoked proofs yet."
+                    claims={organizationClosedClaims}
+                  />
                 </div>
               ) : null}
             </section>
@@ -1953,6 +2073,138 @@ function ProofPreviewCard({ proof }: { proof: ProofPreview }) {
   );
 }
 
+function OrganizationMetric({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-lg border border-emerald-100 bg-white p-3">
+      <p className="text-xs font-semibold uppercase tracking-normal text-emerald-700">
+        {label}
+      </p>
+      <p className="mt-2 text-2xl font-semibold text-slate-950">{value}</p>
+    </div>
+  );
+}
+
+function OrganizationRequestList({
+  title,
+  emptyText,
+  requests,
+}: {
+  title: string;
+  emptyText: string;
+  requests: ClaimRequest[];
+}) {
+  return (
+    <div>
+      <p className="text-sm font-semibold text-slate-950">{title}</p>
+      <div className="mt-2 space-y-2">
+        {requests.length > 0 ? (
+          requests.map((request) => (
+            <article
+              key={request.id}
+              className="rounded-lg border border-emerald-100 bg-white p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950">
+                    {request.purpose}
+                  </p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">
+                    Expires {formatDateTime(request.expires_at)}
+                  </p>
+                </div>
+                <span className="w-fit rounded-md bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                  {formatRequestStatus(request.status)}
+                </span>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {request.requested_truths.map((truth) => (
+                  <span
+                    key={truth}
+                    className="rounded-md bg-[#f7fbf8] px-2 py-1 text-xs font-semibold text-slate-700"
+                  >
+                    {formatProofName(truth)}
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))
+        ) : (
+          <p className="rounded-lg border border-dashed border-emerald-200 bg-white p-3 text-sm font-medium text-slate-500">
+            {emptyText}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OrganizationClaimList({
+  title,
+  emptyText,
+  claims,
+}: {
+  title: string;
+  emptyText: string;
+  claims: Claim[];
+}) {
+  return (
+    <div>
+      <p className="text-sm font-semibold text-slate-950">{title}</p>
+      <div className="mt-2 space-y-2">
+        {claims.length > 0 ? (
+          claims.map((claim) => (
+            <article
+              key={claim.id}
+              className="rounded-lg border border-emerald-100 bg-white p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950">
+                    {claim.purpose}
+                  </p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">
+                    Expires {formatDateTime(claim.expires_at)}
+                  </p>
+                </div>
+                <span className={claimStatusClass(claim.status)}>
+                  {formatClaimStatus(claim.status)}
+                </span>
+              </div>
+
+              {claim.details_visible ? (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {(claim.approved_truths ?? []).map((truth) => (
+                    <span
+                      key={truth}
+                      className="rounded-md bg-[#f7fbf8] px-2 py-1 text-xs font-semibold text-slate-700"
+                    >
+                      {formatProofName(truth)}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 rounded-md bg-[#f7fbf8] px-3 py-2 text-xs font-semibold text-slate-600">
+                  Proof details hidden
+                </p>
+              )}
+            </article>
+          ))
+        ) : (
+          <p className="rounded-lg border border-dashed border-emerald-200 bg-white p-3 text-sm font-medium text-slate-500">
+            {emptyText}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TextInput({
   label,
   value,
@@ -2211,6 +2463,9 @@ function formatRecordStatus(value: string) {
 function formatRequestStatus(value: string) {
   if (value === "pending_approval") {
     return "Waiting for review";
+  }
+  if (value === "approved_with_security_pin") {
+    return "Approved";
   }
   if (value === "approved") {
     return "Approved";
