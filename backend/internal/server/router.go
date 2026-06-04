@@ -100,6 +100,7 @@ func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGett
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
 	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
 	if organizationAuthenticator != nil {
+		mux.HandleFunc("/api/organization/me", organizationProfileHandler(organizationAuthenticator))
 		mux.HandleFunc("/api/organization/claim-requests", organizationClaimRequestsHandler(claimRequestManager, userGetter, organizationAuthenticator))
 	}
 	mux.HandleFunc("/api/exchange-pins/resolve", resolveExchangePINHandler(claimManager))
@@ -511,6 +512,22 @@ func organizationClaimRequestsHandler(claimRequestManager ClaimRequestManager, u
 		}
 
 		writeJSON(w, http.StatusCreated, claimRequest)
+	}
+}
+
+func organizationProfileHandler(organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
+		if !ok {
+			return
+		}
+
+		writeJSON(w, http.StatusOK, organization)
 	}
 }
 

@@ -1536,6 +1536,116 @@ func TestOrganizationClaimRequestsHandlerMapsMissingTargetUser(t *testing.T) {
 	}
 }
 
+func TestOrganizationProfileHandlerReturnsOrganization(t *testing.T) {
+	orgID := uuid.New()
+	orgAuthenticator := &fakeOrganizationAuthenticator{
+		organization: claimrequests.Organization{
+			ID:                 orgID,
+			Name:               "Acme Bank",
+			OrganizationType:   "bank",
+			VerificationStatus: "verified",
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		orgAuthenticator,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/me", nil)
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if orgAuthenticator.apiKey != "test-api-key" {
+		t.Fatalf("api key = %q, want test-api-key", orgAuthenticator.apiKey)
+	}
+
+	var organization claimrequests.Organization
+	if err := json.Unmarshal(response.Body.Bytes(), &organization); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if organization.ID != orgID {
+		t.Fatalf("organization id = %s, want %s", organization.ID, orgID)
+	}
+	if organization.Name != "Acme Bank" {
+		t.Fatalf("organization name = %q, want Acme Bank", organization.Name)
+	}
+
+	responseBody := response.Body.String()
+	for _, forbidden := range []string{"api_key", "key_hash", "raw_document", "security_pin", "security_pin_hash"} {
+		if strings.Contains(responseBody, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestOrganizationProfileHandlerRequiresAPIKey(t *testing.T) {
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{},
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/me", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestOrganizationProfileHandlerMapsInvalidAPIKey(t *testing.T) {
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{err: orgauth.ErrInvalidAPIKey},
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/me", nil)
+	request.Header.Set("X-Kladd-API-Key", "bad-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestClaimRequestByIDHandlerReturnsOwnedRequest(t *testing.T) {
 	userID := uuid.New()
 	requestID := uuid.New()
