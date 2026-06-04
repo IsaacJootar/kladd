@@ -68,6 +68,7 @@ type ClaimRequestManager interface {
 
 type ClaimManager interface {
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]claims.Claim, error)
+	ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]claims.Claim, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
 	GetStatus(ctx context.Context, claimID uuid.UUID) (claims.Claim, error)
 	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (claims.Claim, error)
@@ -103,6 +104,7 @@ func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGett
 	if organizationAuthenticator != nil {
 		mux.HandleFunc("/api/organization/me", organizationProfileHandler(organizationAuthenticator))
 		mux.HandleFunc("/api/organization/claim-requests", organizationClaimRequestsHandler(claimRequestManager, userGetter, organizationAuthenticator))
+		mux.HandleFunc("/api/organization/claims", organizationClaimsHandler(claimManager, organizationAuthenticator))
 	}
 	mux.HandleFunc("/api/exchange-pins/resolve", resolveExchangePINHandler(claimManager))
 	mux.HandleFunc("/api/claims", claimsHandler(claimManager, authenticator))
@@ -542,6 +544,30 @@ func organizationProfileHandler(organizationAuthenticator OrganizationAuthentica
 		}
 
 		writeJSON(w, http.StatusOK, organization)
+	}
+}
+
+func organizationClaimsHandler(claimManager ClaimManager, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
+		if !ok {
+			return
+		}
+
+		claimList, err := claimManager.ListForOrganization(r.Context(), organization.ID)
+		if err != nil {
+			writeListOrganizationClaimsError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string][]claims.Claim{
+			"items": claimList,
+		})
 	}
 }
 
@@ -990,6 +1016,15 @@ func writeListClaimsError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load claims.")
+	}
+}
+
+func writeListOrganizationClaimsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claims.ErrInvalidOrganizationID):
+		writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load organization claims.")
 	}
 }
 

@@ -234,6 +234,7 @@ type fakeClaimManager struct {
 	claims      []claims.Claim
 	err         error
 	userID      uuid.UUID
+	orgID       uuid.UUID
 	getID       uuid.UUID
 	statusID    uuid.UUID
 	revokeID    uuid.UUID
@@ -244,6 +245,14 @@ type fakeClaimManager struct {
 
 func (manager *fakeClaimManager) ListForUser(ctx context.Context, userID uuid.UUID) ([]claims.Claim, error) {
 	manager.userID = userID
+	if manager.err != nil {
+		return nil, manager.err
+	}
+	return manager.claims, nil
+}
+
+func (manager *fakeClaimManager) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]claims.Claim, error) {
+	manager.orgID = organizationID
 	if manager.err != nil {
 		return nil, manager.err
 	}
@@ -1726,6 +1735,86 @@ func TestOrganizationClaimRequestsHandlerListsOrganizationRequests(t *testing.T)
 
 	body := response.Body.String()
 	for _, forbidden := range []string{"raw_document", "file_path", "security_pin", "security_pin_hash", "truth_value", "api_key", "key_hash"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestOrganizationClaimsHandlerListsOrganizationClaims(t *testing.T) {
+	orgID := uuid.New()
+	claimID := uuid.New()
+	manager := &fakeClaimManager{
+		claims: []claims.Claim{
+			{
+				ID:             claimID,
+				ClaimRequestID: uuid.New(),
+				Organization: claimrequests.Organization{
+					ID:                 orgID,
+					Name:               "Acme Bank",
+					OrganizationType:   "bank",
+					VerificationStatus: "verified",
+				},
+				Purpose:        "Account opening",
+				Status:         claims.StatusExpired,
+				IssuedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+				ExpiresAt:      time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+				DetailsVisible: false,
+			},
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		manager,
+		&fakeOrganizationAuthenticator{
+			organization: claimrequests.Organization{
+				ID:               orgID,
+				Name:             "Acme Bank",
+				OrganizationType: "bank",
+			},
+		},
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/claims", nil)
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.orgID != orgID {
+		t.Fatalf("organization id = %s, want %s", manager.orgID, orgID)
+	}
+
+	var responseBody struct {
+		Items []claims.Claim `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responseBody); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(responseBody.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(responseBody.Items))
+	}
+	if responseBody.Items[0].ID != claimID {
+		t.Fatalf("claim id = %s, want %s", responseBody.Items[0].ID, claimID)
+	}
+	if responseBody.Items[0].DetailsVisible {
+		t.Fatal("expired claim details should not be visible")
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{"approved_truths", "raw_document", "file_path", "security_pin", "security_pin_hash", "truth_value", "api_key", "key_hash"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("response exposed forbidden field %q", forbidden)
 		}

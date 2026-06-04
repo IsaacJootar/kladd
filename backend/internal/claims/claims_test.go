@@ -13,21 +13,31 @@ import (
 )
 
 type recordingStore struct {
-	claim      Claim
-	claims     []Claim
-	err        error
-	userID     uuid.UUID
-	claimID    uuid.UUID
-	statusID   uuid.UUID
-	retrieved  time.Time
-	revokedAt  time.Time
-	pinHash    string
-	pinExpiry  time.Time
-	pinCreated time.Time
-	expiredAt  time.Time
+	claim          Claim
+	claims         []Claim
+	err            error
+	userID         uuid.UUID
+	organizationID uuid.UUID
+	claimID        uuid.UUID
+	statusID       uuid.UUID
+	retrieved      time.Time
+	revokedAt      time.Time
+	pinHash        string
+	pinExpiry      time.Time
+	pinCreated     time.Time
+	expiredAt      time.Time
 }
 
 func (store *recordingStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]Claim, error) {
+	store.userID = userID
+	if store.err != nil {
+		return nil, store.err
+	}
+	return store.claims, nil
+}
+
+func (store *recordingStore) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]Claim, error) {
+	store.organizationID = organizationID
 	if store.err != nil {
 		return nil, store.err
 	}
@@ -125,6 +135,50 @@ func TestServiceListHidesDetailsForExpiredClaims(t *testing.T) {
 	}
 	if len(claims[0].ApprovedTruths) != 0 {
 		t.Fatal("expired claim exposed approved truths")
+	}
+}
+
+func TestServiceListForOrganizationHidesDetailsForExpiredClaims(t *testing.T) {
+	organizationID := uuid.New()
+	store := &recordingStore{
+		claims: []Claim{
+			{
+				ID:             uuid.New(),
+				ApprovedTruths: []string{"identity_verified"},
+				Status:         StatusActive,
+				ExpiresAt:      time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	service := NewServiceWithClock(store, func() time.Time {
+		return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	})
+
+	claims, err := service.ListForOrganization(context.Background(), organizationID)
+	if err != nil {
+		t.Fatalf("list organization claims: %v", err)
+	}
+
+	if store.organizationID != organizationID {
+		t.Fatalf("organization id = %s, want %s", store.organizationID, organizationID)
+	}
+	if claims[0].Status != StatusExpired {
+		t.Fatalf("status = %q, want %q", claims[0].Status, StatusExpired)
+	}
+	if claims[0].DetailsVisible {
+		t.Fatal("expired claim details should not be visible")
+	}
+	if len(claims[0].ApprovedTruths) != 0 {
+		t.Fatal("expired claim exposed approved truths")
+	}
+}
+
+func TestServiceListForOrganizationValidatesOrganization(t *testing.T) {
+	service := NewService(&recordingStore{})
+
+	_, err := service.ListForOrganization(context.Background(), uuid.Nil)
+	if !errors.Is(err, ErrInvalidOrganizationID) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidOrganizationID)
 	}
 }
 

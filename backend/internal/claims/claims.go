@@ -22,6 +22,7 @@ const (
 
 var (
 	ErrInvalidUser           = errors.New("user_id is required")
+	ErrInvalidOrganizationID = errors.New("organization_id is required")
 	ErrClaimNotFound         = errors.New("claim not found")
 	ErrClaimNotActive        = errors.New("claim is not active")
 	ErrInvalidExchangePIN    = errors.New("exchange pin must be 6-8 digits")
@@ -50,6 +51,7 @@ type ExchangePIN struct {
 
 type Store interface {
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]Claim, error)
+	ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]Claim, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, claimID uuid.UUID) (Claim, error)
 	GetStatus(ctx context.Context, claimID uuid.UUID, retrievedAt time.Time) (Claim, error)
 	Revoke(ctx context.Context, userID uuid.UUID, claimID uuid.UUID, revokedAt time.Time) (Claim, error)
@@ -83,6 +85,19 @@ func (service Service) ListForUser(ctx context.Context, userID uuid.UUID) ([]Cla
 	}
 
 	claimList, err := service.store.ListForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return service.sanitizeClaims(claimList), nil
+}
+
+func (service Service) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]Claim, error) {
+	if organizationID == uuid.Nil {
+		return nil, ErrInvalidOrganizationID
+	}
+
+	claimList, err := service.store.ListForOrganization(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
