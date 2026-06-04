@@ -20,6 +20,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/server"
 	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
+	"github.com/IsaacJootar/kladd/backend/internal/webhooks"
 )
 
 func main() {
@@ -54,10 +55,12 @@ func main() {
 	claimService := claims.NewService(claimStore)
 	orgAuthStore := orgauth.NewPostgresStore(db)
 	orgAuthService := orgauth.NewService(orgAuthStore)
+	webhookStore := webhooks.NewPostgresStore(db)
+	webhookEndpointService := webhooks.NewEndpointService(webhookStore)
 
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           server.NewRouterWithOrganizationAPI(cfg, userService, userService, pinService, pinResetService, authService, evidenceService, auditService, truthService, claimRequestService, claimService, orgAuthService),
+		Handler:           server.NewRouterWithOrganizationAPI(cfg, userService, userService, pinService, pinResetService, authService, evidenceService, auditService, truthService, claimRequestService, claimService, orgAuthService, webhookEndpointService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -22,6 +22,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
+	"github.com/IsaacJootar/kladd/backend/internal/webhooks"
 	"github.com/google/uuid"
 )
 
@@ -317,6 +318,20 @@ func (authenticator *fakeOrganizationAuthenticator) Authenticate(ctx context.Con
 		return claimrequests.Organization{}, authenticator.err
 	}
 	return authenticator.organization, nil
+}
+
+type fakeWebhookEndpointManager struct {
+	endpoint webhooks.Endpoint
+	err      error
+	input    webhooks.ConfigureEndpointInput
+}
+
+func (manager *fakeWebhookEndpointManager) ConfigureEndpoint(ctx context.Context, input webhooks.ConfigureEndpointInput) (webhooks.Endpoint, error) {
+	manager.input = input
+	if manager.err != nil {
+		return webhooks.Endpoint{}, manager.err
+	}
+	return manager.endpoint, nil
 }
 
 func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator, evidenceManagers ...*fakeEvidenceManager) http.Handler {
@@ -1818,6 +1833,115 @@ func TestOrganizationClaimsHandlerListsOrganizationClaims(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("response exposed forbidden field %q", forbidden)
 		}
+	}
+}
+
+func TestOrganizationWebhookEndpointHandlerConfiguresEndpoint(t *testing.T) {
+	orgID := uuid.New()
+	endpointID := uuid.New()
+	manager := &fakeWebhookEndpointManager{
+		endpoint: webhooks.Endpoint{
+			ID: endpointID,
+			Organization: webhooks.Organization{
+				ID:                 orgID,
+				Name:               "Acme Bank",
+				OrganizationType:   "bank",
+				VerificationStatus: "verified",
+			},
+			URL:       "https://example.com/kladd/webhooks",
+			Status:    webhooks.EndpointStatusActive,
+			CreatedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			UpdatedAt: time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{
+			organization: claimrequests.Organization{
+				ID:               orgID,
+				Name:             "Acme Bank",
+				OrganizationType: "bank",
+			},
+		},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/organization/webhook-endpoint", strings.NewReader(`{"url":"https://example.com/kladd/webhooks"}`))
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.input.OrganizationName != "Acme Bank" {
+		t.Fatalf("organization name = %q, want Acme Bank", manager.input.OrganizationName)
+	}
+	if manager.input.OrganizationType != "bank" {
+		t.Fatalf("organization type = %q, want bank", manager.input.OrganizationType)
+	}
+	if manager.input.URL != "https://example.com/kladd/webhooks" {
+		t.Fatalf("url = %q, want configured url", manager.input.URL)
+	}
+
+	var endpoint webhooks.Endpoint
+	if err := json.Unmarshal(response.Body.Bytes(), &endpoint); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if endpoint.ID != endpointID {
+		t.Fatalf("endpoint id = %s, want %s", endpoint.ID, endpointID)
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{"payload_json", "signature", "security_pin", "api_key", "key_hash", "truth_value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestOrganizationWebhookEndpointHandlerMapsInvalidURL(t *testing.T) {
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{
+			organization: claimrequests.Organization{
+				ID:               uuid.New(),
+				Name:             "Acme Bank",
+				OrganizationType: "bank",
+			},
+		},
+		&fakeWebhookEndpointManager{err: webhooks.ErrInvalidEndpointURL},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/organization/webhook-endpoint", strings.NewReader(`{"url":"ftp://example.com/hooks"}`))
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
 }
 

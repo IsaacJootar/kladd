@@ -17,6 +17,7 @@ import (
 	"github.com/IsaacJootar/kladd/backend/internal/securitypin"
 	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/IsaacJootar/kladd/backend/internal/users"
+	"github.com/IsaacJootar/kladd/backend/internal/webhooks"
 	"github.com/google/uuid"
 )
 
@@ -80,15 +81,24 @@ type OrganizationAuthenticator interface {
 	Authenticate(ctx context.Context, apiKey string) (claimrequests.Organization, error)
 }
 
+type OrganizationWebhookEndpointManager interface {
+	ConfigureEndpoint(ctx context.Context, input webhooks.ConfigureEndpointInput) (webhooks.Endpoint, error)
+}
+
 func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
-	return buildRouter(cfg, userCreator, userGetter, pinSetter, pinResetter, authenticator, evidenceManager, auditLogLister, truthDefinitionLister, claimRequestManager, claimManager, nil)
+	return buildRouter(cfg, userCreator, userGetter, pinSetter, pinResetter, authenticator, evidenceManager, auditLogLister, truthDefinitionLister, claimRequestManager, claimManager, nil, nil)
 }
 
-func NewRouterWithOrganizationAPI(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager, organizationAuthenticator OrganizationAuthenticator) http.Handler {
-	return buildRouter(cfg, userCreator, userGetter, pinSetter, pinResetter, authenticator, evidenceManager, auditLogLister, truthDefinitionLister, claimRequestManager, claimManager, organizationAuthenticator)
+func NewRouterWithOrganizationAPI(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager, organizationAuthenticator OrganizationAuthenticator, webhookEndpointManagers ...OrganizationWebhookEndpointManager) http.Handler {
+	var webhookEndpointManager OrganizationWebhookEndpointManager
+	if len(webhookEndpointManagers) > 0 {
+		webhookEndpointManager = webhookEndpointManagers[0]
+	}
+
+	return buildRouter(cfg, userCreator, userGetter, pinSetter, pinResetter, authenticator, evidenceManager, auditLogLister, truthDefinitionLister, claimRequestManager, claimManager, organizationAuthenticator, webhookEndpointManager)
 }
 
-func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager, organizationAuthenticator OrganizationAuthenticator) http.Handler {
+func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager, organizationAuthenticator OrganizationAuthenticator, webhookEndpointManager OrganizationWebhookEndpointManager) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler(cfg))
 	mux.HandleFunc("/api/users", createUserHandler(userCreator))
@@ -105,6 +115,9 @@ func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGett
 		mux.HandleFunc("/api/organization/me", organizationProfileHandler(organizationAuthenticator))
 		mux.HandleFunc("/api/organization/claim-requests", organizationClaimRequestsHandler(claimRequestManager, userGetter, organizationAuthenticator))
 		mux.HandleFunc("/api/organization/claims", organizationClaimsHandler(claimManager, organizationAuthenticator))
+		if webhookEndpointManager != nil {
+			mux.HandleFunc("/api/organization/webhook-endpoint", organizationWebhookEndpointHandler(webhookEndpointManager, organizationAuthenticator))
+		}
 	}
 	mux.HandleFunc("/api/exchange-pins/resolve", resolveExchangePINHandler(claimManager))
 	mux.HandleFunc("/api/claims", claimsHandler(claimManager, authenticator))
@@ -322,6 +335,10 @@ type approveClaimRequestRequest struct {
 
 type resolveExchangePINRequest struct {
 	ExchangePIN string `json:"exchange_pin"`
+}
+
+type configureOrganizationWebhookEndpointRequest struct {
+	URL string `json:"url"`
 }
 
 func evidenceItemsHandler(evidenceManager EvidenceManager, authenticator Authenticator) http.HandlerFunc {
@@ -568,6 +585,40 @@ func organizationClaimsHandler(claimManager ClaimManager, organizationAuthentica
 		writeJSON(w, http.StatusOK, map[string][]claims.Claim{
 			"items": claimList,
 		})
+	}
+}
+
+func organizationWebhookEndpointHandler(webhookEndpointManager OrganizationWebhookEndpointManager, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
+		if !ok {
+			return
+		}
+
+		var request configureOrganizationWebhookEndpointRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+			return
+		}
+
+		endpoint, err := webhookEndpointManager.ConfigureEndpoint(r.Context(), webhooks.ConfigureEndpointInput{
+			OrganizationName: organization.Name,
+			OrganizationType: organization.OrganizationType,
+			URL:              request.URL,
+		})
+		if err != nil {
+			writeConfigureOrganizationWebhookEndpointError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, endpoint)
 	}
 }
 
@@ -1025,6 +1076,17 @@ func writeListOrganizationClaimsError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load organization claims.")
+	}
+}
+
+func writeConfigureOrganizationWebhookEndpointError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, webhooks.ErrInvalidOrganization):
+		writeError(w, http.StatusBadRequest, "invalid_organization", "Organization name is required.")
+	case errors.Is(err, webhooks.ErrInvalidEndpointURL):
+		writeError(w, http.StatusBadRequest, "invalid_webhook_url", "Webhook endpoint URL must be http or https.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to configure webhook endpoint.")
 	}
 }
 
