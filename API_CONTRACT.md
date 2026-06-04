@@ -25,6 +25,9 @@
 - POST /api/organization/claim-requests
 - GET /api/organization/claim-requests
 - GET /api/organization/claims
+- GET /api/organization/webhook-endpoint
+- POST /api/organization/webhook-endpoint
+- GET /api/organization/webhook-deliveries
 - GET /api/claim-requests/{id}
 - POST /api/claim-requests/{id}/approve
 - POST /api/claim-requests/{id}/deny
@@ -189,6 +192,39 @@ go run ./cmd/deliverwebhooks
 ```
 
 The delivery command sends already-signed safe payloads to active endpoints, marks successful deliveries, and schedules failed attempts for retry.
+
+## Organization Webhook Endpoint
+GET /api/organization/webhook-endpoint
+
+Requires `X-Kladd-API-Key`.
+
+Returns the authenticated organization's configured webhook endpoint metadata only:
+- id
+- organization
+- url
+- status
+- created_at
+- updated_at
+
+Responses must not include webhook signatures, payload bodies, API keys, API key hashes, raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, exchange PIN hashes, or truth values.
+
+POST /api/organization/webhook-endpoint
+
+Requires `X-Kladd-API-Key`.
+
+```json
+{
+  "url": "https://example.com/kladd/webhooks"
+}
+```
+
+Creates or updates the authenticated organization's active webhook endpoint. The endpoint URL must use `http` or `https`.
+
+GET /api/organization/webhook-deliveries
+
+Requires `X-Kladd-API-Key`.
+
+Returns safe webhook delivery history for the authenticated organization. Responses include event type, aggregate id, status, attempts, delivery timing, and retry timing only. They must not include webhook signatures, payload bodies, raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, exchange PIN hashes, API key hashes, or truth values.
 
 ## Verification URL
 GET /verify/{claim_id}

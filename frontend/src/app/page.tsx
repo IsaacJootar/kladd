@@ -89,6 +89,32 @@ type ClaimListResponse = {
   items: Claim[];
 };
 
+type WebhookEndpoint = {
+  id: string;
+  organization: Organization;
+  url: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type WebhookDelivery = {
+  id: string;
+  event_type: string;
+  aggregate_id: string;
+  organization_id: string;
+  status: string;
+  attempts: number;
+  next_attempt_at?: string;
+  delivered_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type WebhookDeliveryListResponse = {
+  items: WebhookDelivery[];
+};
+
 type ExchangePIN = {
   claim_id: string;
   exchange_pin: string;
@@ -241,6 +267,11 @@ export default function Home() {
     ClaimRequest[]
   >([]);
   const [organizationClaims, setOrganizationClaims] = useState<Claim[]>([]);
+  const [organizationWebhookEndpoint, setOrganizationWebhookEndpoint] =
+    useState<WebhookEndpoint | null>(null);
+  const [organizationWebhookURL, setOrganizationWebhookURL] = useState("");
+  const [organizationWebhookDeliveries, setOrganizationWebhookDeliveries] =
+    useState<WebhookDelivery[]>([]);
   const [copiedClaimID, setCopiedClaimID] = useState("");
   const [claimQRCodes, setClaimQRCodes] = useState<Record<string, string>>({});
   const [claimExchangePINs, setClaimExchangePINs] = useState<
@@ -649,7 +680,13 @@ export default function Home() {
     clearMessages();
 
     try {
-      const [profile, requestsResponse, claimsResponse] = await Promise.all([
+      const [
+        profile,
+        requestsResponse,
+        claimsResponse,
+        webhookEndpoint,
+        webhookDeliveriesResponse,
+      ] = await Promise.all([
         apiRequest<Organization>("/organization/me", {
           method: "GET",
           apiKey,
@@ -662,12 +699,57 @@ export default function Home() {
           method: "GET",
           apiKey,
         }),
+        loadOrganizationWebhookEndpoint(apiKey),
+        loadOrganizationWebhookDeliveries(apiKey),
       ]);
 
       setOrganizationProfile(profile);
       setOrganizationClaimRequests(requestsResponse.items);
       setOrganizationClaims(claimsResponse.items);
+      setOrganizationWebhookEndpoint(webhookEndpoint);
+      setOrganizationWebhookURL(webhookEndpoint?.url ?? "");
+      setOrganizationWebhookDeliveries(webhookDeliveriesResponse.items);
       setNotice("Organization workspace loaded.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleConfigureOrganizationWebhookEndpoint(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    const apiKey = organizationRequestForm.apiKey.trim();
+    const url = organizationWebhookURL.trim();
+    if (!apiKey) {
+      setError("Enter your organization API key.");
+      return;
+    }
+    if (!url) {
+      setError("Enter a webhook endpoint URL.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const endpoint = await apiRequest<WebhookEndpoint>(
+        "/organization/webhook-endpoint",
+        {
+          method: "POST",
+          apiKey,
+          body: JSON.stringify({ url }),
+        },
+      );
+      const deliveriesResponse = await loadOrganizationWebhookDeliveries(apiKey);
+      setOrganizationWebhookEndpoint(endpoint);
+      setOrganizationWebhookURL(endpoint.url);
+      setOrganizationWebhookDeliveries(deliveriesResponse.items);
+      setNotice("Webhook endpoint saved.");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -1475,6 +1557,62 @@ export default function Home() {
                     emptyText="No expired or revoked proofs yet."
                     claims={organizationClosedClaims}
                   />
+
+                  <section className="rounded-lg border border-emerald-100 bg-white p-4">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950">
+                        Webhook endpoint
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">
+                        Receive proof status updates from Kladd.
+                      </p>
+                    </div>
+
+                    <form
+                      className="mt-4 space-y-3"
+                      onSubmit={handleConfigureOrganizationWebhookEndpoint}
+                    >
+                      <TextInput
+                        label="Endpoint URL"
+                        type="url"
+                        value={organizationWebhookURL}
+                        onChange={setOrganizationWebhookURL}
+                        required
+                      />
+                      <SubmitButton disabled={isSubmitting}>
+                        Save endpoint
+                      </SubmitButton>
+                    </form>
+
+                    {organizationWebhookEndpoint ? (
+                      <div className="mt-4 rounded-lg border border-emerald-100 bg-[#f7fbf8] p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="break-all text-sm font-semibold text-slate-950">
+                              {organizationWebhookEndpoint.url}
+                            </p>
+                            <p className="mt-1 text-xs font-medium text-slate-500">
+                              Updated{" "}
+                              {formatDateTime(
+                                organizationWebhookEndpoint.updated_at,
+                              )}
+                            </p>
+                          </div>
+                          <span className="w-fit rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-800">
+                            {organizationWebhookEndpoint.status}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-4 rounded-lg border border-dashed border-emerald-200 bg-[#f7fbf8] p-3 text-sm font-medium text-slate-500">
+                        No endpoint saved yet.
+                      </p>
+                    )}
+                  </section>
+
+                  <OrganizationWebhookDeliveryList
+                    deliveries={organizationWebhookDeliveries}
+                  />
                 </div>
               ) : null}
             </section>
@@ -2205,6 +2343,72 @@ function OrganizationClaimList({
   );
 }
 
+function OrganizationWebhookDeliveryList({
+  deliveries,
+}: {
+  deliveries: WebhookDelivery[];
+}) {
+  return (
+    <div>
+      <p className="text-sm font-semibold text-slate-950">Webhook history</p>
+      <div className="mt-2 space-y-2">
+        {deliveries.length > 0 ? (
+          deliveries.map((delivery) => (
+            <article
+              key={delivery.id}
+              className="rounded-lg border border-emerald-100 bg-white p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950">
+                    {formatWebhookEvent(delivery.event_type)}
+                  </p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">
+                    Created {formatDateTime(delivery.created_at)}
+                  </p>
+                </div>
+                <span className={deliveryStatusClass(delivery.status)}>
+                  {formatDeliveryStatus(delivery.status)}
+                </span>
+              </div>
+              <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                <div>
+                  <dt className="font-semibold text-slate-500">Attempts</dt>
+                  <dd className="mt-1 font-medium text-slate-800">
+                    {delivery.attempts}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-semibold text-slate-500">Delivered</dt>
+                  <dd className="mt-1 font-medium text-slate-800">
+                    {delivery.delivered_at
+                      ? formatDateTime(delivery.delivered_at)
+                      : "Not yet"}
+                  </dd>
+                </div>
+                {delivery.next_attempt_at ? (
+                  <div className="sm:col-span-2">
+                    <dt className="font-semibold text-slate-500">
+                      Next attempt
+                    </dt>
+                    <dd className="mt-1 font-medium text-slate-800">
+                      {formatDateTime(delivery.next_attempt_at)}
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
+            </article>
+          ))
+        ) : (
+          <p className="rounded-lg border border-dashed border-emerald-200 bg-white p-3 text-sm font-medium text-slate-500">
+            No webhook deliveries yet.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TextInput({
   label,
   value,
@@ -2373,6 +2577,31 @@ async function loadClaims(accessToken: string) {
   return response.items;
 }
 
+async function loadOrganizationWebhookEndpoint(apiKey: string) {
+  try {
+    return await apiRequest<WebhookEndpoint>("/organization/webhook-endpoint", {
+      method: "GET",
+      apiKey,
+    });
+  } catch (err) {
+    if (readError(err) === "Webhook endpoint is not configured.") {
+      return null;
+    }
+
+    throw err;
+  }
+}
+
+async function loadOrganizationWebhookDeliveries(apiKey: string) {
+  return apiRequest<WebhookDeliveryListResponse>(
+    "/organization/webhook-deliveries",
+    {
+      method: "GET",
+      apiKey,
+    },
+  );
+}
+
 async function loadActivityItems(accessToken: string) {
   const response = await apiRequest<ActivityListResponse>("/audit-logs", {
     method: "GET",
@@ -2494,6 +2723,34 @@ function formatClaimStatus(value: string) {
   return formatCategory(value);
 }
 
+function formatWebhookEvent(value: string) {
+  if (value === "claim.approved") {
+    return "Proof approved";
+  }
+  if (value === "claim.expired") {
+    return "Proof expired";
+  }
+  if (value === "claim.revoked") {
+    return "Proof revoked";
+  }
+
+  return formatCategory(value.replaceAll(".", "_"));
+}
+
+function formatDeliveryStatus(value: string) {
+  if (value === "pending") {
+    return "Pending";
+  }
+  if (value === "delivered") {
+    return "Delivered";
+  }
+  if (value === "failed") {
+    return "Failed";
+  }
+
+  return formatCategory(value);
+}
+
 function claimStatusClass(value: string) {
   const base = "w-fit rounded-md px-2.5 py-1 text-xs font-semibold";
   if (value === "active") {
@@ -2503,6 +2760,18 @@ function claimStatusClass(value: string) {
     return `${base} bg-slate-100 text-slate-700`;
   }
   if (value === "revoked") {
+    return `${base} bg-red-50 text-red-800`;
+  }
+
+  return `${base} bg-amber-50 text-amber-800`;
+}
+
+function deliveryStatusClass(value: string) {
+  const base = "w-fit rounded-md px-2.5 py-1 text-xs font-semibold";
+  if (value === "delivered") {
+    return `${base} bg-emerald-50 text-emerald-800`;
+  }
+  if (value === "failed") {
     return `${base} bg-red-50 text-red-800`;
   }
 
