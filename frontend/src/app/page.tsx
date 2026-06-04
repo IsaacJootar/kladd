@@ -141,14 +141,6 @@ type ProofPreview = {
   accent: "indigo" | "emerald" | "amber";
 };
 
-type TestRequestForm = {
-  organizationName: string;
-  organizationType: string;
-  purpose: string;
-  requestedTruths: string[];
-  durationDays: string;
-};
-
 type OrganizationRequestForm = {
   apiKey: string;
   userEmail: string;
@@ -225,14 +217,6 @@ const emptyEvidenceForm = {
   file: null as File | null,
 };
 
-const emptyTestRequestForm: TestRequestForm = {
-  organizationName: "Acme Bank",
-  organizationType: "bank",
-  purpose: "Account opening",
-  requestedTruths: ["identity_verified"],
-  durationDays: "30",
-};
-
 const emptyOrganizationRequestForm: OrganizationRequestForm = {
   apiKey: "",
   userEmail: "",
@@ -262,9 +246,6 @@ export default function Home() {
   const [activityItems, setActivityItems] = useState<ActivityItem[]>([]);
   const [approvalPINs, setApprovalPINs] = useState<Record<string, string>>({});
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
-  const [testRequestForm, setTestRequestForm] = useState(
-    emptyTestRequestForm,
-  );
   const [organizationRequestForm, setOrganizationRequestForm] = useState(
     emptyOrganizationRequestForm,
   );
@@ -295,6 +276,7 @@ export default function Home() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const signedIn = Boolean(token && currentUser);
+  const organizationSignedIn = Boolean(organizationProfile);
   const pendingClaimRequests = useMemo(
     () =>
       claimRequests.filter((request) => request.status === "pending_approval"),
@@ -571,43 +553,6 @@ export default function Home() {
       setActivityItems(await loadActivityItems(token));
       setEvidenceForm(emptyEvidenceForm);
       setNotice("Record added.");
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  async function handleCreateTestRequest(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!token) {
-      setError("Please sign in before creating a test request.");
-      return;
-    }
-
-    if (testRequestForm.requestedTruths.length === 0) {
-      setError("Choose at least one proof for the request.");
-      return;
-    }
-
-    setIsSubmitting(true);
-    clearMessages();
-
-    try {
-      const request = await apiRequest<ClaimRequest>("/claim-requests", {
-        method: "POST",
-        token,
-        body: JSON.stringify({
-          organization_name: testRequestForm.organizationName,
-          organization_type: testRequestForm.organizationType,
-          purpose: testRequestForm.purpose,
-          requested_truths: testRequestForm.requestedTruths,
-          duration_days: Number(testRequestForm.durationDays),
-        }),
-      });
-      setClaimRequests((requests) => [request, ...requests]);
-      setTestRequestForm(emptyTestRequestForm);
-      setNotice("Test request created. You can approve it from Pending proof requests.");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -975,10 +920,23 @@ export default function Home() {
     setCopiedClaimID("");
     setCopiedExchangePINClaimID("");
     setEvidenceForm(emptyEvidenceForm);
-    setTestRequestForm(emptyTestRequestForm);
     setResetPINForm(emptyResetPINForm);
     clearAuthStorage();
     setNotice("Signed out.");
+    setError("");
+  }
+
+  function signOutOrganization() {
+    setOrganizationProfile(null);
+    setOrganizationClaimRequests([]);
+    setOrganizationClaims([]);
+    setOrganizationWebhookEndpoint(null);
+    setOrganizationWebhookURL("");
+    setOrganizationWebhookDeliveries([]);
+    setOrganizationActivityItems([]);
+    setCreatedOrganizationRequest(null);
+    setOrganizationRequestForm(emptyOrganizationRequestForm);
+    setNotice("Organization signed out.");
     setError("");
   }
 
@@ -1091,13 +1049,22 @@ export default function Home() {
                   </p>
                 </div>
 
-                {signedIn ? (
+                {workspaceMode === "personal" && signedIn ? (
                   <button
                     type="button"
                     onClick={signOut}
                     className="h-10 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50"
                   >
                     Sign out
+                  </button>
+                ) : null}
+                {workspaceMode === "organization" && organizationSignedIn ? (
+                  <button
+                    type="button"
+                    onClick={signOutOrganization}
+                    className="h-10 rounded-md border border-emerald-200 bg-white px-4 text-sm font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50"
+                  >
+                    Sign out organization
                   </button>
                 ) : null}
               </div>
@@ -1118,7 +1085,7 @@ export default function Home() {
                     </article>
                   ))}
                 </div>
-              ) : (
+              ) : organizationSignedIn ? (
                 <div className="mt-5 grid gap-3 sm:grid-cols-3">
                   <OrganizationMetric
                     label="Waiting"
@@ -1132,6 +1099,15 @@ export default function Home() {
                     label="Closed"
                     value={String(organizationClosedClaims.length)}
                   />
+                </div>
+              ) : (
+                <div className="mt-5 rounded-lg border border-dashed border-emerald-200 bg-[#f7fbf8] p-4">
+                  <p className="text-sm font-semibold text-slate-950">
+                    Organization not signed in
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    Use the Organization sign in panel to load requester tools.
+                  </p>
                 </div>
               )}
             </section>
@@ -1392,33 +1368,13 @@ export default function Home() {
                   ) : null}
                 </div>
 
+                {organizationSignedIn ? (
+                  <>
                 <form
                   className="mt-5 grid gap-4 lg:grid-cols-2"
                   onSubmit={handleCreateOrganizationRequest}
                 >
                   <div className="space-y-4">
-                    <TextInput
-                      label="Organization API key"
-                      type="password"
-                      value={organizationRequestForm.apiKey}
-                      onChange={(value) =>
-                        setOrganizationRequestForm((form) => ({
-                          ...form,
-                          apiKey: value,
-                        }))
-                      }
-                      required
-                    />
-
-                    <button
-                      type="button"
-                      onClick={handleLoadOrganizationWorkspace}
-                      disabled={isSubmitting}
-                      className="h-11 w-full rounded-md border border-emerald-200 bg-white px-4 text-sm font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
-                    >
-                      Load organization workspace
-                    </button>
-
                     <TextInput
                       label="User email"
                       type="email"
@@ -1528,21 +1484,20 @@ export default function Home() {
                   </div>
                 ) : null}
 
-                {organizationProfile ? (
                   <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
                     <div className="space-y-4">
                       <div className="rounded-lg border border-emerald-200 bg-white p-4">
                         <p className="text-sm font-semibold text-slate-950">
-                          {organizationProfile.name}
+                          {organizationProfile?.name ?? "Organization"}
                         </p>
                         <p className="mt-1 text-sm text-slate-600">
                           {formatCategory(
-                            organizationProfile.organization_type,
+                            organizationProfile?.organization_type ?? "requester",
                           )}
                         </p>
                         <span className="mt-3 inline-flex w-fit rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-800">
                           {formatRecordStatus(
-                            organizationProfile.verification_status,
+                            organizationProfile?.verification_status ?? "loaded",
                           )}
                         </span>
                       </div>
@@ -1623,10 +1578,17 @@ export default function Home() {
                       />
                     </div>
                   </div>
+                  </>
                 ) : (
-                  <div className="mt-5 rounded-lg border border-dashed border-emerald-200 bg-white p-5 text-sm font-medium text-slate-500">
-                    Enter an organization API key and load the workspace to see
-                    requests, released proofs, webhook settings, and history.
+                  <div className="mt-5 rounded-lg border border-dashed border-emerald-200 bg-white p-5">
+                    <p className="text-sm font-semibold text-slate-950">
+                      Organization access required
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Use the Organization sign in panel to load your
+                      organization workspace before sending requests or viewing
+                      requester activity.
+                    </p>
                   </div>
                 )}
               </section>
@@ -1634,7 +1596,7 @@ export default function Home() {
           </div>
 
           <aside className="space-y-5">
-            {workspaceMode === "personal" ? (
+            {workspaceMode === "personal" && !signedIn ? (
             <section
               id="account-access"
               className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
@@ -1738,23 +1700,50 @@ export default function Home() {
                 </form>
               )}
             </section>
-            ) : (
+            ) : null}
+
+            {workspaceMode === "organization" ? (
               <section className="rounded-lg border border-emerald-100 bg-white p-5 shadow-sm">
                 <p className="text-sm font-semibold text-emerald-700">
-                  Requester boundary
+                  Organization sign in
                 </p>
                 <h2 className="mt-1 text-lg font-semibold tracking-normal">
-                  Organizations request. Users approve.
+                  Use your API key
                 </h2>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                  This workspace tracks requests and released proofs for an
-                  organization. It never approves user requests or asks for a
-                  user Security PIN.
+                  Load your organization workspace to request proofs and track
+                  verification results.
                 </p>
-              </section>
-            )}
 
-            {workspaceMode === "personal" ? (
+                <div className="mt-5 space-y-4">
+                  <TextInput
+                    label="Organization API key"
+                    type="password"
+                    value={organizationRequestForm.apiKey}
+                    onChange={(value) =>
+                      setOrganizationRequestForm((form) => ({
+                        ...form,
+                        apiKey: value,
+                      }))
+                    }
+                    required
+                  />
+
+                  <button
+                    type="button"
+                    onClick={handleLoadOrganizationWorkspace}
+                    disabled={isSubmitting}
+                    className="h-11 w-full rounded-md bg-emerald-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                  >
+                    {organizationSignedIn
+                      ? "Reload organization"
+                      : "Sign in organization"}
+                  </button>
+                </div>
+              </section>
+            ) : null}
+
+            {workspaceMode === "personal" && signedIn ? (
               <>
             <section
               id="security"
@@ -1782,10 +1771,9 @@ export default function Home() {
                   onChange={setSecurityPIN}
                   minLength={4}
                   maxLength={6}
-                  disabled={!signedIn}
                   required
                 />
-                <SubmitButton disabled={!signedIn || isSubmitting}>
+                <SubmitButton disabled={isSubmitting}>
                   Set Security PIN
                 </SubmitButton>
               </form>
@@ -1804,7 +1792,6 @@ export default function Home() {
                       password: value,
                     }))
                   }
-                  disabled={!signedIn}
                   required
                 />
                 <TextInput
@@ -1820,106 +1807,10 @@ export default function Home() {
                   }
                   minLength={4}
                   maxLength={6}
-                  disabled={!signedIn}
                   required
                 />
-                <SubmitButton disabled={!signedIn || isSubmitting}>
+                <SubmitButton disabled={isSubmitting}>
                   Reset Security PIN
-                </SubmitButton>
-              </form>
-            </section>
-
-            <section className="hidden rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <div>
-                <p className="text-sm font-semibold text-slate-500">
-                  Requests
-                </p>
-                <h2 className="mt-1 text-lg font-semibold tracking-normal">
-                  Create test request
-                </h2>
-              </div>
-
-              <form className="mt-5 space-y-4" onSubmit={handleCreateTestRequest}>
-                <TextInput
-                  label="Requester"
-                  value={testRequestForm.organizationName}
-                  onChange={(value) =>
-                    setTestRequestForm((form) => ({
-                      ...form,
-                      organizationName: value,
-                    }))
-                  }
-                  disabled={!signedIn}
-                  required
-                />
-
-                <TextInput
-                  label="Purpose"
-                  value={testRequestForm.purpose}
-                  onChange={(value) =>
-                    setTestRequestForm((form) => ({ ...form, purpose: value }))
-                  }
-                  disabled={!signedIn}
-                  required
-                />
-
-                <label className="block">
-                  <span className="text-sm font-semibold text-slate-700">
-                    Duration
-                  </span>
-                  <select
-                    value={testRequestForm.durationDays}
-                    onChange={(event) =>
-                      setTestRequestForm((form) => ({
-                        ...form,
-                        durationDays: event.target.value,
-                      }))
-                    }
-                    disabled={!signedIn}
-                    className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
-                  >
-                    <option value="7">7 days</option>
-                    <option value="30">30 days</option>
-                    <option value="90">90 days</option>
-                    <option value="180">180 days</option>
-                  </select>
-                </label>
-
-                <fieldset disabled={!signedIn} className="space-y-2">
-                  <legend className="text-sm font-semibold text-slate-700">
-                    Proofs
-                  </legend>
-                  <div className="grid gap-2">
-                    {proofOptions.map((proof) => (
-                      <label
-                        key={proof.key}
-                        className="flex items-center gap-2 rounded-md border border-slate-200 bg-[#f9fbfd] px-3 py-2 text-sm font-medium text-slate-700"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={testRequestForm.requestedTruths.includes(
-                            proof.key,
-                          )}
-                          onChange={(event) =>
-                            setTestRequestForm((form) => ({
-                              ...form,
-                              requestedTruths: event.target.checked
-                                ? [...form.requestedTruths, proof.key]
-                                : form.requestedTruths.filter(
-                                    (truth) => truth !== proof.key,
-                                  ),
-                            }))
-                          }
-                          className="h-4 w-4 rounded border-slate-300 text-indigo-700 focus:ring-indigo-500"
-                        />
-                        {proof.label}
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-
-                <SubmitButton disabled={!signedIn || isSubmitting}>
-                  Create request
                 </SubmitButton>
               </form>
             </section>
@@ -1947,7 +1838,6 @@ export default function Home() {
                         category: event.target.value,
                       }))
                     }
-                    disabled={!signedIn}
                     className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
                   >
                     <option value="passport">Passport</option>
@@ -1968,7 +1858,6 @@ export default function Home() {
                       displayName: value,
                     }))
                   }
-                  disabled={!signedIn}
                 />
 
                 <label className="block">
@@ -1983,13 +1872,12 @@ export default function Home() {
                         file: event.target.files?.[0] ?? null,
                       }))
                     }
-                    disabled={!signedIn}
                     required
                     className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 outline-none transition file:mr-3 file:rounded-md file:border-0 file:bg-indigo-50 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-indigo-800 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
                   />
                 </label>
 
-                <SubmitButton disabled={!signedIn || isSubmitting}>
+                <SubmitButton disabled={isSubmitting}>
                   Add record
                 </SubmitButton>
               </form>
