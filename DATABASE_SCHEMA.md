@@ -19,8 +19,12 @@
 ### organizations
 - id
 - name
+- email
+- password_hash
 - organization_type
 - verification_status
+- created_at
+- updated_at
 
 ### organization_api_keys
 - id
