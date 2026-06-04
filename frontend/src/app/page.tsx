@@ -272,6 +272,9 @@ export default function Home() {
   const [organizationWebhookURL, setOrganizationWebhookURL] = useState("");
   const [organizationWebhookDeliveries, setOrganizationWebhookDeliveries] =
     useState<WebhookDelivery[]>([]);
+  const [organizationActivityItems, setOrganizationActivityItems] = useState<
+    ActivityItem[]
+  >([]);
   const [copiedClaimID, setCopiedClaimID] = useState("");
   const [claimQRCodes, setClaimQRCodes] = useState<Record<string, string>>({});
   const [claimExchangePINs, setClaimExchangePINs] = useState<
@@ -686,6 +689,7 @@ export default function Home() {
         claimsResponse,
         webhookEndpoint,
         webhookDeliveriesResponse,
+        activityResponse,
       ] = await Promise.all([
         apiRequest<Organization>("/organization/me", {
           method: "GET",
@@ -701,6 +705,7 @@ export default function Home() {
         }),
         loadOrganizationWebhookEndpoint(apiKey),
         loadOrganizationWebhookDeliveries(apiKey),
+        loadOrganizationActivityItems(apiKey),
       ]);
 
       setOrganizationProfile(profile);
@@ -709,6 +714,7 @@ export default function Home() {
       setOrganizationWebhookEndpoint(webhookEndpoint);
       setOrganizationWebhookURL(webhookEndpoint?.url ?? "");
       setOrganizationWebhookDeliveries(webhookDeliveriesResponse.items);
+      setOrganizationActivityItems(activityResponse.items);
       setNotice("Organization workspace loaded.");
     } catch (err) {
       setError(readError(err));
@@ -746,9 +752,11 @@ export default function Home() {
         },
       );
       const deliveriesResponse = await loadOrganizationWebhookDeliveries(apiKey);
+      const activityResponse = await loadOrganizationActivityItems(apiKey);
       setOrganizationWebhookEndpoint(endpoint);
       setOrganizationWebhookURL(endpoint.url);
       setOrganizationWebhookDeliveries(deliveriesResponse.items);
+      setOrganizationActivityItems(activityResponse.items);
       setNotice("Webhook endpoint saved.");
     } catch (err) {
       setError(readError(err));
@@ -1613,6 +1621,8 @@ export default function Home() {
                   <OrganizationWebhookDeliveryList
                     deliveries={organizationWebhookDeliveries}
                   />
+
+                  <OrganizationActivityList items={organizationActivityItems} />
                 </div>
               ) : null}
             </section>
@@ -2409,6 +2419,42 @@ function OrganizationWebhookDeliveryList({
   );
 }
 
+function OrganizationActivityList({ items }: { items: ActivityItem[] }) {
+  return (
+    <div>
+      <p className="text-sm font-semibold text-slate-950">Access history</p>
+      <div className="mt-2 space-y-2">
+        {items.length > 0 ? (
+          items.map((item) => (
+            <article
+              key={item.id}
+              className="rounded-lg border border-emerald-100 bg-white p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950">
+                    {item.title}
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    {item.description}
+                  </p>
+                </div>
+                <span className="w-fit rounded-md bg-[#f7fbf8] px-2.5 py-1 text-xs font-semibold text-slate-600">
+                  {formatDateTime(item.created_at)}
+                </span>
+              </div>
+            </article>
+          ))
+        ) : (
+          <p className="rounded-lg border border-dashed border-emerald-200 bg-white p-3 text-sm font-medium text-slate-500">
+            No organization activity yet.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TextInput({
   label,
   value,
@@ -2600,6 +2646,13 @@ async function loadOrganizationWebhookDeliveries(apiKey: string) {
       apiKey,
     },
   );
+}
+
+async function loadOrganizationActivityItems(apiKey: string) {
+  return apiRequest<ActivityListResponse>("/organization/audit-logs", {
+    method: "GET",
+    apiKey,
+  });
 }
 
 async function loadActivityItems(accessToken: string) {

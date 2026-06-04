@@ -22,6 +22,7 @@
 ## Core Endpoints
 - POST /api/claim-requests
 - GET /api/organization/me
+- GET /api/organization/audit-logs
 - POST /api/organization/claim-requests
 - GET /api/organization/claim-requests
 - GET /api/organization/claims
@@ -126,6 +127,12 @@ Returns safe organization profile fields only:
 - verification_status
 
 Responses must not include API keys, API key hashes, raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, or truth values.
+
+GET /api/organization/audit-logs
+
+Requires `X-Kladd-API-Key`.
+
+Returns sanitized activity history for the authenticated organization. Responses include event type, safe title, safe description, and timestamp only. They must not include raw metadata, raw documents, webhook payloads, webhook signatures, sensitive identity anchors, Security PIN values, Security PIN hashes, exchange PIN hashes, API keys, API key hashes, or truth values.
 
 POST /api/organization/claim-requests
 
