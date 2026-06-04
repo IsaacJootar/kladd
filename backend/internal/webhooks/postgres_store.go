@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type PostgresStore struct {
@@ -34,6 +36,44 @@ func (store PostgresStore) ConfigureEndpoint(ctx context.Context, record Configu
 	}
 
 	if err := tx.Commit(); err != nil {
+		return Endpoint{}, err
+	}
+
+	return endpoint, nil
+}
+
+func (store PostgresStore) GetEndpointForOrganization(ctx context.Context, organizationID uuid.UUID) (Endpoint, error) {
+	var endpoint Endpoint
+	err := store.db.QueryRowContext(ctx, `
+SELECT
+    endpoint.id,
+    endpoint.url,
+    endpoint.status,
+    endpoint.created_at,
+    endpoint.updated_at,
+    org.id,
+    org.name,
+    org.organization_type,
+    org.verification_status
+FROM organization_webhook_endpoints endpoint
+JOIN organizations org ON org.id = endpoint.organization_id
+WHERE endpoint.organization_id = $1`,
+		organizationID,
+	).Scan(
+		&endpoint.ID,
+		&endpoint.URL,
+		&endpoint.Status,
+		&endpoint.CreatedAt,
+		&endpoint.UpdatedAt,
+		&endpoint.Organization.ID,
+		&endpoint.Organization.Name,
+		&endpoint.Organization.OrganizationType,
+		&endpoint.Organization.VerificationStatus,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Endpoint{}, ErrEndpointNotFound
+		}
 		return Endpoint{}, err
 	}
 

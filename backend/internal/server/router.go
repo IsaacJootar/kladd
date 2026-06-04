@@ -83,6 +83,7 @@ type OrganizationAuthenticator interface {
 
 type OrganizationWebhookEndpointManager interface {
 	ConfigureEndpoint(ctx context.Context, input webhooks.ConfigureEndpointInput) (webhooks.Endpoint, error)
+	GetEndpointForOrganization(ctx context.Context, organizationID uuid.UUID) (webhooks.Endpoint, error)
 }
 
 func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
@@ -590,13 +591,24 @@ func organizationClaimsHandler(claimManager ClaimManager, organizationAuthentica
 
 func organizationWebhookEndpointHandler(webhookEndpointManager OrganizationWebhookEndpointManager, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
+		if !ok {
 			return
 		}
 
-		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
-		if !ok {
+		if r.Method == http.MethodGet {
+			endpoint, err := webhookEndpointManager.GetEndpointForOrganization(r.Context(), organization.ID)
+			if err != nil {
+				writeGetOrganizationWebhookEndpointError(w, err)
+				return
+			}
+
+			writeJSON(w, http.StatusOK, endpoint)
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
@@ -1087,6 +1099,17 @@ func writeConfigureOrganizationWebhookEndpointError(w http.ResponseWriter, err e
 		writeError(w, http.StatusBadRequest, "invalid_webhook_url", "Webhook endpoint URL must be http or https.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to configure webhook endpoint.")
+	}
+}
+
+func writeGetOrganizationWebhookEndpointError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, webhooks.ErrInvalidOrganizationID):
+		writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
+	case errors.Is(err, webhooks.ErrEndpointNotFound):
+		writeError(w, http.StatusNotFound, "webhook_endpoint_not_found", "Webhook endpoint is not configured.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load webhook endpoint.")
 	}
 }
 

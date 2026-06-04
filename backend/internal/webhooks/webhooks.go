@@ -32,8 +32,10 @@ const (
 )
 
 var (
-	ErrInvalidOrganization = errors.New("organization name is required")
-	ErrInvalidEndpointURL  = errors.New("webhook endpoint url must be http or https")
+	ErrInvalidOrganization   = errors.New("organization name is required")
+	ErrInvalidOrganizationID = errors.New("organization_id is required")
+	ErrInvalidEndpointURL    = errors.New("webhook endpoint url must be http or https")
+	ErrEndpointNotFound      = errors.New("webhook endpoint not found")
 )
 
 type ClaimEvent struct {
@@ -121,6 +123,7 @@ type txExecutor interface {
 
 type EndpointStore interface {
 	ConfigureEndpoint(ctx context.Context, record ConfigureEndpointRecord) (Endpoint, error)
+	GetEndpointForOrganization(ctx context.Context, organizationID uuid.UUID) (Endpoint, error)
 }
 
 type DeliveryStore interface {
@@ -183,6 +186,14 @@ func (service EndpointService) ConfigureEndpoint(ctx context.Context, input Conf
 	}
 
 	return service.store.ConfigureEndpoint(ctx, record)
+}
+
+func (service EndpointService) GetEndpointForOrganization(ctx context.Context, organizationID uuid.UUID) (Endpoint, error) {
+	if organizationID == uuid.Nil {
+		return Endpoint{}, ErrInvalidOrganizationID
+	}
+
+	return service.store.GetEndpointForOrganization(ctx, organizationID)
 }
 
 func (service DeliveryService) DeliverPending(ctx context.Context) (DeliverySummary, error) {

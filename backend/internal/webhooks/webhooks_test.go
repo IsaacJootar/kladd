@@ -22,9 +22,10 @@ type recordingExecutor struct {
 }
 
 type endpointRecordingStore struct {
-	record   ConfigureEndpointRecord
-	endpoint Endpoint
-	err      error
+	record         ConfigureEndpointRecord
+	endpoint       Endpoint
+	err            error
+	organizationID uuid.UUID
 }
 
 type deliveryRecordingStore struct {
@@ -68,6 +69,14 @@ func (store *endpointRecordingStore) ConfigureEndpoint(ctx context.Context, reco
 		CreatedAt: record.ConfiguredAt,
 		UpdatedAt: record.ConfiguredAt,
 	}, nil
+}
+
+func (store *endpointRecordingStore) GetEndpointForOrganization(ctx context.Context, organizationID uuid.UUID) (Endpoint, error) {
+	store.organizationID = organizationID
+	if store.err != nil {
+		return Endpoint{}, store.err
+	}
+	return store.endpoint, nil
 }
 
 func (store *deliveryRecordingStore) ListPendingDeliveries(ctx context.Context, dueAt time.Time, limit int) ([]PendingDelivery, error) {
@@ -163,6 +172,44 @@ func TestEndpointServiceConfigureEndpointValidatesInput(t *testing.T) {
 				t.Fatalf("err = %v, want %v", err, test.err)
 			}
 		})
+	}
+}
+
+func TestEndpointServiceGetEndpointForOrganizationUsesOrganizationBoundary(t *testing.T) {
+	organizationID := uuid.New()
+	store := &endpointRecordingStore{
+		endpoint: Endpoint{
+			ID: uuid.New(),
+			Organization: Organization{
+				ID:               organizationID,
+				Name:             "Acme Bank",
+				OrganizationType: "bank",
+			},
+			URL:    "https://example.com/kladd/webhooks",
+			Status: EndpointStatusActive,
+		},
+	}
+	service := NewEndpointService(store)
+
+	endpoint, err := service.GetEndpointForOrganization(context.Background(), organizationID)
+	if err != nil {
+		t.Fatalf("get endpoint: %v", err)
+	}
+
+	if store.organizationID != organizationID {
+		t.Fatalf("organization id = %s, want %s", store.organizationID, organizationID)
+	}
+	if endpoint.URL != "https://example.com/kladd/webhooks" {
+		t.Fatalf("url = %q, want configured endpoint", endpoint.URL)
+	}
+}
+
+func TestEndpointServiceGetEndpointForOrganizationValidatesOrganization(t *testing.T) {
+	service := NewEndpointService(&endpointRecordingStore{})
+
+	_, err := service.GetEndpointForOrganization(context.Background(), uuid.Nil)
+	if !errors.Is(err, ErrInvalidOrganizationID) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidOrganizationID)
 	}
 }
 
