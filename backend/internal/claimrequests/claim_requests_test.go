@@ -12,13 +12,15 @@ import (
 )
 
 type recordingStore struct {
-	record        CreateRecord
-	approveRecord ApproveRecord
-	denyRecord    DenyRecord
-	request       ClaimRequest
-	requests      []ClaimRequest
-	approval      ApprovalResult
-	err           error
+	record         CreateRecord
+	approveRecord  ApproveRecord
+	denyRecord     DenyRecord
+	request        ClaimRequest
+	requests       []ClaimRequest
+	approval       ApprovalResult
+	err            error
+	userID         uuid.UUID
+	organizationID uuid.UUID
 }
 
 func (store *recordingStore) Create(ctx context.Context, record CreateRecord) (ClaimRequest, error) {
@@ -40,6 +42,15 @@ func (store *recordingStore) Create(ctx context.Context, record CreateRecord) (C
 }
 
 func (store *recordingStore) ListForUser(ctx context.Context, userID uuid.UUID) ([]ClaimRequest, error) {
+	store.userID = userID
+	if store.err != nil {
+		return nil, store.err
+	}
+	return store.requests, nil
+}
+
+func (store *recordingStore) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]ClaimRequest, error) {
+	store.organizationID = organizationID
 	if store.err != nil {
 		return nil, store.err
 	}
@@ -207,6 +218,45 @@ func TestServiceCreateValidatesInput(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.err)
 			}
 		})
+	}
+}
+
+func TestServiceListForOrganizationUsesOrganizationBoundary(t *testing.T) {
+	organizationID := uuid.New()
+	store := &recordingStore{
+		requests: []ClaimRequest{
+			{
+				ID:              uuid.New(),
+				Organization:    Organization{ID: organizationID, Name: "Acme Bank"},
+				UserID:          uuid.New(),
+				Purpose:         "Account opening",
+				RequestedTruths: []string{"identity_verified"},
+				Status:          StatusPendingApproval,
+				ExpiresAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	service := NewService(store)
+
+	requests, err := service.ListForOrganization(context.Background(), organizationID)
+	if err != nil {
+		t.Fatalf("list organization requests: %v", err)
+	}
+
+	if store.organizationID != organizationID {
+		t.Fatalf("organization id = %s, want %s", store.organizationID, organizationID)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(requests))
+	}
+}
+
+func TestServiceListForOrganizationValidatesOrganization(t *testing.T) {
+	service := NewService(&recordingStore{})
+
+	_, err := service.ListForOrganization(context.Background(), uuid.Nil)
+	if !errors.Is(err, ErrInvalidOrganizationID) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidOrganizationID)
 	}
 }
 

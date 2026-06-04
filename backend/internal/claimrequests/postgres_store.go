@@ -86,6 +86,33 @@ ORDER BY cr.created_at DESC`,
 	return requests, nil
 }
 
+func (store PostgresStore) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]ClaimRequest, error) {
+	rows, err := store.db.QueryContext(ctx, claimRequestSelectQuery()+`
+WHERE cr.organization_id = $1
+ORDER BY cr.created_at DESC`,
+		organizationID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	requests := []ClaimRequest{}
+	for rows.Next() {
+		request, err := scanClaimRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return requests, nil
+}
+
 func (store PostgresStore) GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (ClaimRequest, error) {
 	request, err := scanClaimRequest(store.db.QueryRowContext(ctx, claimRequestSelectQuery()+`
 WHERE cr.user_id = $1 AND cr.id = $2`,

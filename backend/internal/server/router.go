@@ -60,6 +60,7 @@ type TruthDefinitionLister interface {
 type ClaimRequestManager interface {
 	Create(ctx context.Context, input claimrequests.CreateInput) (claimrequests.ClaimRequest, error)
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]claimrequests.ClaimRequest, error)
+	ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]claimrequests.ClaimRequest, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (claimrequests.ClaimRequest, error)
 	Approve(ctx context.Context, input claimrequests.ApproveInput) (claimrequests.ApprovalResult, error)
 	Deny(ctx context.Context, input claimrequests.DenyInput) (claimrequests.ClaimRequest, error)
@@ -474,13 +475,26 @@ func claimRequestsHandler(claimRequestManager ClaimRequestManager, authenticator
 
 func organizationClaimRequestsHandler(claimRequestManager ClaimRequestManager, userGetter UserGetter, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
+		if !ok {
 			return
 		}
 
-		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
-		if !ok {
+		if r.Method == http.MethodGet {
+			requests, err := claimRequestManager.ListForOrganization(r.Context(), organization.ID)
+			if err != nil {
+				writeListOrganizationClaimRequestsError(w, err)
+				return
+			}
+
+			writeJSON(w, http.StatusOK, map[string][]claimrequests.ClaimRequest{
+				"items": requests,
+			})
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
@@ -915,6 +929,15 @@ func writeListClaimRequestsError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load claim requests.")
+	}
+}
+
+func writeListOrganizationClaimRequestsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, claimrequests.ErrInvalidOrganizationID):
+		writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load organization claim requests.")
 	}
 }
 

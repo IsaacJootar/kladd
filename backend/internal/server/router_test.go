@@ -176,6 +176,7 @@ type fakeClaimRequestManager struct {
 	approve  claimrequests.ApproveInput
 	deny     claimrequests.DenyInput
 	userID   uuid.UUID
+	orgID    uuid.UUID
 	getID    uuid.UUID
 }
 
@@ -189,6 +190,14 @@ func (manager *fakeClaimRequestManager) Create(ctx context.Context, input claimr
 
 func (manager *fakeClaimRequestManager) ListForUser(ctx context.Context, userID uuid.UUID) ([]claimrequests.ClaimRequest, error) {
 	manager.userID = userID
+	if manager.err != nil {
+		return nil, manager.err
+	}
+	return manager.requests, nil
+}
+
+func (manager *fakeClaimRequestManager) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]claimrequests.ClaimRequest, error) {
+	manager.orgID = organizationID
 	if manager.err != nil {
 		return nil, manager.err
 	}
@@ -1643,6 +1652,83 @@ func TestOrganizationProfileHandlerMapsInvalidAPIKey(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestOrganizationClaimRequestsHandlerListsOrganizationRequests(t *testing.T) {
+	orgID := uuid.New()
+	requestID := uuid.New()
+	manager := &fakeClaimRequestManager{
+		requests: []claimrequests.ClaimRequest{
+			{
+				ID:     requestID,
+				UserID: uuid.New(),
+				Organization: claimrequests.Organization{
+					ID:                 orgID,
+					Name:               "Acme Bank",
+					OrganizationType:   "bank",
+					VerificationStatus: "verified",
+				},
+				Purpose:         "Account opening",
+				RequestedTruths: []string{"identity_verified"},
+				Status:          claimrequests.StatusPendingApproval,
+				ExpiresAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+				CreatedAt:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		manager,
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{
+			organization: claimrequests.Organization{
+				ID:               orgID,
+				Name:             "Acme Bank",
+				OrganizationType: "bank",
+			},
+		},
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/claim-requests", nil)
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.orgID != orgID {
+		t.Fatalf("organization id = %s, want %s", manager.orgID, orgID)
+	}
+
+	var responseBody struct {
+		Items []claimrequests.ClaimRequest `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responseBody); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(responseBody.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(responseBody.Items))
+	}
+	if responseBody.Items[0].ID != requestID {
+		t.Fatalf("request id = %s, want %s", responseBody.Items[0].ID, requestID)
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{"raw_document", "file_path", "security_pin", "security_pin_hash", "truth_value", "api_key", "key_hash"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
 	}
 }
 

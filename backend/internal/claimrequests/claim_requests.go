@@ -21,16 +21,17 @@ const (
 )
 
 var (
-	ErrInvalidUser          = errors.New("user_id is required")
-	ErrInvalidOrganization  = errors.New("organization name is required")
-	ErrInvalidPurpose       = errors.New("purpose is required")
-	ErrInvalidScope         = errors.New("requested truths are required")
-	ErrInvalidDuration      = errors.New("duration must be at least 1 day")
-	ErrInvalidSecurityPIN   = errors.New("security pin is required")
-	ErrClaimRequestNotFound = errors.New("claim request not found")
-	ErrClaimRequestExpired  = errors.New("claim request has expired")
-	ErrClaimRequestNotOpen  = errors.New("claim request is not pending approval")
-	ErrPINValidatorMissing  = errors.New("security pin validator is required")
+	ErrInvalidUser           = errors.New("user_id is required")
+	ErrInvalidOrganization   = errors.New("organization name is required")
+	ErrInvalidOrganizationID = errors.New("organization_id is required")
+	ErrInvalidPurpose        = errors.New("purpose is required")
+	ErrInvalidScope          = errors.New("requested truths are required")
+	ErrInvalidDuration       = errors.New("duration must be at least 1 day")
+	ErrInvalidSecurityPIN    = errors.New("security pin is required")
+	ErrClaimRequestNotFound  = errors.New("claim request not found")
+	ErrClaimRequestExpired   = errors.New("claim request has expired")
+	ErrClaimRequestNotOpen   = errors.New("claim request is not pending approval")
+	ErrPINValidatorMissing   = errors.New("security pin validator is required")
 )
 
 type CreateInput struct {
@@ -117,6 +118,7 @@ type DenyRecord struct {
 type Store interface {
 	Create(ctx context.Context, record CreateRecord) (ClaimRequest, error)
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]ClaimRequest, error)
+	ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]ClaimRequest, error)
 	GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (ClaimRequest, error)
 	Approve(ctx context.Context, record ApproveRecord) (ApprovalResult, error)
 	Deny(ctx context.Context, record DenyRecord) (ClaimRequest, error)
@@ -158,6 +160,14 @@ func (service Service) ListForUser(ctx context.Context, userID uuid.UUID) ([]Cla
 	}
 
 	return service.store.ListForUser(ctx, userID)
+}
+
+func (service Service) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]ClaimRequest, error) {
+	if organizationID == uuid.Nil {
+		return nil, ErrInvalidOrganizationID
+	}
+
+	return service.store.ListForOrganization(ctx, organizationID)
 }
 
 func (service Service) GetForUser(ctx context.Context, userID uuid.UUID, requestID uuid.UUID) (ClaimRequest, error) {
