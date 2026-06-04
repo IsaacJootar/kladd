@@ -262,6 +262,49 @@ func TestEndpointServiceListDeliveriesForOrganizationValidatesOrganization(t *te
 	}
 }
 
+func TestInsertWebhookEndpointConfiguredAuditWritesSafeMetadata(t *testing.T) {
+	orgID := uuid.New()
+	endpointID := uuid.New()
+	executor := &recordingExecutor{}
+
+	err := insertWebhookEndpointConfiguredAudit(context.Background(), executor, Endpoint{
+		ID: endpointID,
+		Organization: Organization{
+			ID:               orgID,
+			Name:             "Acme Bank",
+			OrganizationType: "bank",
+		},
+		URL:    "https://example.com/kladd/webhooks",
+		Status: EndpointStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("insert audit: %v", err)
+	}
+
+	if !strings.Contains(executor.query, "INSERT INTO audit_logs") {
+		t.Fatalf("query = %q, want audit insert", executor.query)
+	}
+	if executor.args[1] != "organization" {
+		t.Fatalf("actor type = %v, want organization", executor.args[1])
+	}
+	if executor.args[2] != orgID {
+		t.Fatalf("actor id = %v, want %s", executor.args[2], orgID)
+	}
+	if executor.args[3] != "webhook.endpoint_configured" {
+		t.Fatalf("event type = %v, want webhook.endpoint_configured", executor.args[3])
+	}
+
+	metadata := executor.args[4].(map[string]any)
+	if metadata["endpoint_id"] != endpointID.String() {
+		t.Fatalf("endpoint id metadata = %v, want %s", metadata["endpoint_id"], endpointID)
+	}
+	for _, forbidden := range []string{"payload_json", "signature", "security_pin", "api_key", "key_hash", "truth_value", "raw_document"} {
+		if _, ok := metadata[forbidden]; ok {
+			t.Fatalf("metadata exposed forbidden key %q", forbidden)
+		}
+	}
+}
+
 func TestDeliveryServiceDeliversPendingWebhook(t *testing.T) {
 	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	deliveryID := uuid.New()

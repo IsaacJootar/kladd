@@ -35,6 +35,10 @@ func (store PostgresStore) ConfigureEndpoint(ctx context.Context, record Configu
 		return Endpoint{}, err
 	}
 
+	if err := insertWebhookEndpointConfiguredAudit(ctx, tx, endpoint); err != nil {
+		return Endpoint{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return Endpoint{}, err
 	}
@@ -266,4 +270,26 @@ RETURNING id, url, status, created_at, updated_at`,
 
 	endpoint.Organization = organization
 	return endpoint, nil
+}
+
+func insertWebhookEndpointConfiguredAudit(ctx context.Context, executor txExecutor, endpoint Endpoint) error {
+	_, err := executor.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"organization",
+		endpoint.Organization.ID,
+		"webhook.endpoint_configured",
+		map[string]any{
+			"endpoint_id": endpoint.ID.String(),
+			"status":      endpoint.Status,
+			"url":         endpoint.URL,
+		},
+	)
+	return err
 }
