@@ -141,13 +141,22 @@ func (manager *fakeEvidenceManager) List(ctx context.Context, userID uuid.UUID) 
 }
 
 type fakeAuditLogLister struct {
-	events []audit.Event
-	err    error
-	userID uuid.UUID
+	events         []audit.Event
+	err            error
+	userID         uuid.UUID
+	organizationID uuid.UUID
 }
 
 func (lister *fakeAuditLogLister) ListForUser(ctx context.Context, userID uuid.UUID) ([]audit.Event, error) {
 	lister.userID = userID
+	if lister.err != nil {
+		return nil, lister.err
+	}
+	return lister.events, nil
+}
+
+func (lister *fakeAuditLogLister) ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]audit.Event, error) {
+	lister.organizationID = organizationID
 	if lister.err != nil {
 		return nil, lister.err
 	}
@@ -1584,6 +1593,97 @@ func TestOrganizationClaimRequestsHandlerMapsMissingTargetUser(t *testing.T) {
 
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestOrganizationAuditLogsHandlerListsSafeEvents(t *testing.T) {
+	orgID := uuid.New()
+	auditLister := &fakeAuditLogLister{
+		events: []audit.Event{
+			{
+				ID:          uuid.New(),
+				EventType:   "claim_request.created",
+				Title:       "Activity recorded",
+				Description: "A Kladd account activity was recorded.",
+				CreatedAt:   time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		auditLister,
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{
+			organization: claimrequests.Organization{
+				ID:               orgID,
+				Name:             "Acme Bank",
+				OrganizationType: "bank",
+			},
+		},
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/audit-logs", nil)
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if auditLister.organizationID != orgID {
+		t.Fatalf("organization id = %s, want %s", auditLister.organizationID, orgID)
+	}
+
+	var responseBody struct {
+		Items []audit.Event `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responseBody); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(responseBody.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(responseBody.Items))
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{"metadata", "raw_document", "file_path", "security_pin", "security_pin_hash", "api_key", "key_hash", "truth_value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestOrganizationAuditLogsHandlerRequiresAPIKey(t *testing.T) {
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{},
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/audit-logs", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
 }
 

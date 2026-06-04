@@ -52,6 +52,7 @@ type EvidenceManager interface {
 
 type AuditLogLister interface {
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]audit.Event, error)
+	ListForOrganization(ctx context.Context, organizationID uuid.UUID) ([]audit.Event, error)
 }
 
 type TruthDefinitionLister interface {
@@ -115,6 +116,7 @@ func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGett
 	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
 	if organizationAuthenticator != nil {
 		mux.HandleFunc("/api/organization/me", organizationProfileHandler(organizationAuthenticator))
+		mux.HandleFunc("/api/organization/audit-logs", organizationAuditLogsHandler(auditLogLister, organizationAuthenticator))
 		mux.HandleFunc("/api/organization/claim-requests", organizationClaimRequestsHandler(claimRequestManager, userGetter, organizationAuthenticator))
 		mux.HandleFunc("/api/organization/claims", organizationClaimsHandler(claimManager, organizationAuthenticator))
 		if webhookEndpointManager != nil {
@@ -385,6 +387,30 @@ func auditLogsHandler(auditLogLister AuditLogLister, authenticator Authenticator
 		events, err := auditLogLister.ListForUser(r.Context(), userID)
 		if err != nil {
 			writeListAuditLogsError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string][]audit.Event{
+			"items": events,
+		})
+	}
+}
+
+func organizationAuditLogsHandler(auditLogLister AuditLogLister, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
+		if !ok {
+			return
+		}
+
+		events, err := auditLogLister.ListForOrganization(r.Context(), organization.ID)
+		if err != nil {
+			writeListOrganizationAuditLogsError(w, err)
 			return
 		}
 
@@ -1009,6 +1035,15 @@ func writeListAuditLogsError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load access history.")
+	}
+}
+
+func writeListOrganizationAuditLogsError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, audit.ErrInvalidOrganizationID):
+		writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load organization access history.")
 	}
 }
 
