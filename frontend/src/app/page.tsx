@@ -5,6 +5,7 @@ import Image from "next/image";
 import QRCode from "qrcode";
 
 type Mode = "register" | "login";
+type WorkspaceMode = "personal" | "organization";
 
 type User = {
   id: string;
@@ -236,6 +237,8 @@ const emptyOrganizationRequestForm: OrganizationRequestForm = {
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>("register");
+  const [workspaceMode, setWorkspaceMode] =
+    useState<WorkspaceMode>("personal");
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
   const [loginForm, setLoginForm] = useState(emptyLoginForm);
   const [securityPIN, setSecurityPIN] = useState("");
@@ -992,33 +995,67 @@ export default function Home() {
               </h1>
             </div>
 
-            <nav className="flex flex-wrap gap-2" aria-label="Main navigation">
-              {navItems.map((item) => (
-                <span
-                  key={item}
-                  className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm"
+            <nav
+              className="flex flex-col gap-3 sm:items-end"
+              aria-label="Workspace navigation"
+            >
+              <div className="grid w-full grid-cols-2 rounded-lg bg-slate-200/70 p-1 sm:w-[360px]">
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceMode("personal")}
+                  className={workspaceButtonClass(workspaceMode === "personal")}
                 >
-                  {item}
-                </span>
-              ))}
+                  Personal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceMode("organization")}
+                  className={workspaceButtonClass(
+                    workspaceMode === "organization",
+                  )}
+                >
+                  Organization
+                </button>
+              </div>
+              <div className="hidden flex-wrap gap-2 md:flex">
+                {navItems.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
             </nav>
           </div>
         </header>
 
-        <section className="grid flex-1 gap-5 py-5 lg:grid-cols-[minmax(0,1fr)_390px]">
+        <section
+          className={`grid flex-1 gap-5 py-5 ${
+            workspaceMode === "organization"
+              ? "lg:grid-cols-[minmax(0,1fr)_340px]"
+              : "lg:grid-cols-[minmax(0,1fr)_390px]"
+          }`}
+        >
           <div className="space-y-5">
             <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
                   <p className="text-sm font-semibold text-emerald-700">
-                    Account workspace
+                    {workspaceMode === "personal"
+                      ? "Personal workspace"
+                      : "Organization workspace"}
                   </p>
                   <h2 className="mt-1 text-2xl font-semibold tracking-normal text-slate-950">
-                    Control your proofs
+                    {workspaceMode === "personal"
+                      ? "Control your proofs"
+                      : "Request proofs without handling documents"}
                   </h2>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                    Keep your records ready, review requests clearly, and approve
-                    only the proofs you want to release.
+                    {workspaceMode === "personal"
+                      ? "Keep your records ready, review requests clearly, and approve only the proofs you want to release."
+                      : "Send proof requests, wait for the user to approve, and review only the released verification result."}
                   </p>
                 </div>
 
@@ -1033,24 +1070,41 @@ export default function Home() {
                 ) : null}
               </div>
 
-              <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {statusCards.map((card) => (
-                  <article
-                    key={card.label}
-                    className="min-h-28 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4"
-                  >
-                    <p className="text-sm font-medium text-slate-500">
-                      {card.label}
-                    </p>
-                    <p className="mt-3 text-2xl font-semibold text-slate-950">
-                      {card.value}
-                    </p>
-                  </article>
-                ))}
-              </div>
+              {workspaceMode === "personal" ? (
+                <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {statusCards.map((card) => (
+                    <article
+                      key={card.label}
+                      className="min-h-28 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4"
+                    >
+                      <p className="text-sm font-medium text-slate-500">
+                        {card.label}
+                      </p>
+                      <p className="mt-3 text-2xl font-semibold text-slate-950">
+                        {card.value}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <OrganizationMetric
+                    label="Waiting"
+                    value={String(organizationPendingRequests.length)}
+                  />
+                  <OrganizationMetric
+                    label="Active"
+                    value={String(organizationActiveClaims.length)}
+                  />
+                  <OrganizationMetric
+                    label="Closed"
+                    value={String(organizationClosedClaims.length)}
+                  />
+                </div>
+              )}
             </section>
 
-            {signedIn && currentUser ? (
+            {workspaceMode === "personal" && signedIn && currentUser ? (
               <>
                 <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -1273,9 +1327,273 @@ export default function Home() {
                 </section>
               </>
             ) : null}
+
+            {workspaceMode === "organization" ? (
+              <section className="rounded-lg border border-emerald-100 bg-[#f7fbf8] p-5 shadow-sm">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-emerald-700">
+                      For requesters
+                    </p>
+                    <h2 className="mt-1 text-xl font-semibold tracking-normal">
+                      Send a proof request
+                    </h2>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                      Organizations request a proof. The user reviews it and
+                      approves with their own Security PIN before Kladd releases
+                      any verification result.
+                    </p>
+                  </div>
+                  {organizationProfile ? (
+                    <span className="w-fit rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                      {organizationProfile.name}
+                    </span>
+                  ) : null}
+                </div>
+
+                <form
+                  className="mt-5 grid gap-4 lg:grid-cols-2"
+                  onSubmit={handleCreateOrganizationRequest}
+                >
+                  <div className="space-y-4">
+                    <TextInput
+                      label="Organization API key"
+                      type="password"
+                      value={organizationRequestForm.apiKey}
+                      onChange={(value) =>
+                        setOrganizationRequestForm((form) => ({
+                          ...form,
+                          apiKey: value,
+                        }))
+                      }
+                      required
+                    />
+
+                    <button
+                      type="button"
+                      onClick={handleLoadOrganizationWorkspace}
+                      disabled={isSubmitting}
+                      className="h-11 w-full rounded-md border border-emerald-200 bg-white px-4 text-sm font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
+                    >
+                      Load organization workspace
+                    </button>
+
+                    <TextInput
+                      label="User email"
+                      type="email"
+                      value={organizationRequestForm.userEmail}
+                      onChange={(value) =>
+                        setOrganizationRequestForm((form) => ({
+                          ...form,
+                          userEmail: value,
+                        }))
+                      }
+                      required
+                    />
+
+                    <TextInput
+                      label="Request purpose"
+                      value={organizationRequestForm.purpose}
+                      onChange={(value) =>
+                        setOrganizationRequestForm((form) => ({
+                          ...form,
+                          purpose: value,
+                        }))
+                      }
+                      required
+                    />
+
+                    <label className="block">
+                      <span className="text-sm font-semibold text-slate-700">
+                        Access duration
+                      </span>
+                      <select
+                        value={organizationRequestForm.durationDays}
+                        onChange={(event) =>
+                          setOrganizationRequestForm((form) => ({
+                            ...form,
+                            durationDays: event.target.value,
+                          }))
+                        }
+                        className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
+                      >
+                        <option value="7">7 days</option>
+                        <option value="30">30 days</option>
+                        <option value="90">90 days</option>
+                        <option value="180">180 days</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="space-y-4">
+                    <fieldset className="space-y-2">
+                      <legend className="text-sm font-semibold text-slate-700">
+                        Proofs requested
+                      </legend>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {proofOptions.map((proof) => (
+                          <label
+                            key={proof.key}
+                            className="flex items-center gap-2 rounded-md border border-emerald-100 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={organizationRequestForm.requestedTruths.includes(
+                                proof.key,
+                              )}
+                              onChange={(event) =>
+                                setOrganizationRequestForm((form) => ({
+                                  ...form,
+                                  requestedTruths: event.target.checked
+                                    ? [...form.requestedTruths, proof.key]
+                                    : form.requestedTruths.filter(
+                                        (truth) => truth !== proof.key,
+                                      ),
+                                }))
+                              }
+                              className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-500"
+                            />
+                            {proof.label}
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+
+                    <div className="rounded-lg border border-emerald-100 bg-white p-4">
+                      <p className="text-sm font-semibold text-slate-950">
+                        User approval required
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
+                        Your organization can send the request and track its
+                        status, but only the user can approve or deny it.
+                      </p>
+                    </div>
+
+                    <SubmitButton disabled={isSubmitting}>
+                      Send request
+                    </SubmitButton>
+                  </div>
+                </form>
+
+                {createdOrganizationRequest ? (
+                  <div className="mt-5 rounded-lg border border-emerald-200 bg-white p-4">
+                    <p className="text-sm font-semibold text-slate-950">
+                      Request sent
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-slate-600">
+                      Waiting for the user to review and approve this proof
+                      request.
+                    </p>
+                  </div>
+                ) : null}
+
+                {organizationProfile ? (
+                  <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+                    <div className="space-y-4">
+                      <div className="rounded-lg border border-emerald-200 bg-white p-4">
+                        <p className="text-sm font-semibold text-slate-950">
+                          {organizationProfile.name}
+                        </p>
+                        <p className="mt-1 text-sm text-slate-600">
+                          {formatCategory(
+                            organizationProfile.organization_type,
+                          )}
+                        </p>
+                        <span className="mt-3 inline-flex w-fit rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-800">
+                          {formatRecordStatus(
+                            organizationProfile.verification_status,
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="grid gap-4 lg:grid-cols-3">
+                        <OrganizationRequestList
+                          title="Waiting for users"
+                          emptyText="No user approvals are waiting."
+                          requests={organizationPendingRequests}
+                        />
+
+                        <OrganizationClaimList
+                          title="Active proofs"
+                          emptyText="No active proofs yet."
+                          claims={organizationActiveClaims}
+                        />
+
+                        <OrganizationClaimList
+                          title="Closed proofs"
+                          emptyText="No expired or revoked proofs yet."
+                          claims={organizationClosedClaims}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <section className="rounded-lg border border-emerald-100 bg-white p-4">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-950">
+                            Webhook endpoint
+                          </p>
+                          <p className="mt-1 text-sm leading-6 text-slate-600">
+                            Receive proof status updates from Kladd.
+                          </p>
+                        </div>
+
+                        <form
+                          className="mt-4 space-y-3"
+                          onSubmit={handleConfigureOrganizationWebhookEndpoint}
+                        >
+                          <TextInput
+                            label="Endpoint URL"
+                            type="url"
+                            value={organizationWebhookURL}
+                            onChange={setOrganizationWebhookURL}
+                            required
+                          />
+                          <SubmitButton disabled={isSubmitting}>
+                            Save endpoint
+                          </SubmitButton>
+                        </form>
+
+                        {organizationWebhookEndpoint ? (
+                          <div className="mt-4 rounded-lg border border-emerald-100 bg-[#f7fbf8] p-3">
+                            <p className="break-all text-sm font-semibold text-slate-950">
+                              {organizationWebhookEndpoint.url}
+                            </p>
+                            <p className="mt-1 text-xs font-medium text-slate-500">
+                              Updated{" "}
+                              {formatDateTime(
+                                organizationWebhookEndpoint.updated_at,
+                              )}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="mt-4 rounded-lg border border-dashed border-emerald-200 bg-[#f7fbf8] p-3 text-sm font-medium text-slate-500">
+                            No endpoint saved yet.
+                          </p>
+                        )}
+                      </section>
+
+                      <OrganizationWebhookDeliveryList
+                        deliveries={organizationWebhookDeliveries}
+                      />
+
+                      <OrganizationActivityList
+                        items={organizationActivityItems}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-5 rounded-lg border border-dashed border-emerald-200 bg-white p-5 text-sm font-medium text-slate-500">
+                    Enter an organization API key and load the workspace to see
+                    requests, released proofs, webhook settings, and history.
+                  </div>
+                )}
+              </section>
+            ) : null}
           </div>
 
           <aside className="space-y-5">
+            {workspaceMode === "personal" ? (
             <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
               <div className="grid grid-cols-2 rounded-lg bg-slate-100 p-1">
                 <button
@@ -1376,257 +1694,24 @@ export default function Home() {
                 </form>
               )}
             </section>
-
-            <section className="rounded-lg border border-emerald-100 bg-[#f7fbf8] p-5 shadow-sm">
-              <div>
+            ) : (
+              <section className="rounded-lg border border-emerald-100 bg-white p-5 shadow-sm">
                 <p className="text-sm font-semibold text-emerald-700">
-                  Organization workspace
+                  Requester boundary
                 </p>
                 <h2 className="mt-1 text-lg font-semibold tracking-normal">
-                  Request a proof
+                  Organizations request. Users approve.
                 </h2>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                  Send a request to a user. Kladd will wait for their Security
-                  PIN approval before releasing any proof.
+                  This workspace tracks requests and released proofs for an
+                  organization. It never approves user requests or asks for a
+                  user Security PIN.
                 </p>
-              </div>
+              </section>
+            )}
 
-              <form
-                className="mt-5 space-y-4"
-                onSubmit={handleCreateOrganizationRequest}
-              >
-                <TextInput
-                  label="Organization API key"
-                  type="password"
-                  value={organizationRequestForm.apiKey}
-                  onChange={(value) =>
-                    setOrganizationRequestForm((form) => ({
-                      ...form,
-                      apiKey: value,
-                    }))
-                  }
-                  required
-                />
-
-                <button
-                  type="button"
-                  onClick={handleLoadOrganizationWorkspace}
-                  disabled={isSubmitting}
-                  className="h-10 w-full rounded-md border border-emerald-200 bg-white px-4 text-sm font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
-                >
-                  Load workspace
-                </button>
-
-                <TextInput
-                  label="User email"
-                  type="email"
-                  value={organizationRequestForm.userEmail}
-                  onChange={(value) =>
-                    setOrganizationRequestForm((form) => ({
-                      ...form,
-                      userEmail: value,
-                    }))
-                  }
-                  required
-                />
-
-                <TextInput
-                  label="Purpose"
-                  value={organizationRequestForm.purpose}
-                  onChange={(value) =>
-                    setOrganizationRequestForm((form) => ({
-                      ...form,
-                      purpose: value,
-                    }))
-                  }
-                  required
-                />
-
-                <label className="block">
-                  <span className="text-sm font-semibold text-slate-700">
-                    Duration
-                  </span>
-                  <select
-                    value={organizationRequestForm.durationDays}
-                    onChange={(event) =>
-                      setOrganizationRequestForm((form) => ({
-                        ...form,
-                        durationDays: event.target.value,
-                      }))
-                    }
-                    className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
-                  >
-                    <option value="7">7 days</option>
-                    <option value="30">30 days</option>
-                    <option value="90">90 days</option>
-                    <option value="180">180 days</option>
-                  </select>
-                </label>
-
-                <fieldset className="space-y-2">
-                  <legend className="text-sm font-semibold text-slate-700">
-                    Proofs
-                  </legend>
-                  <div className="grid gap-2">
-                    {proofOptions.map((proof) => (
-                      <label
-                        key={proof.key}
-                        className="flex items-center gap-2 rounded-md border border-emerald-100 bg-white px-3 py-2 text-sm font-medium text-slate-700"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={organizationRequestForm.requestedTruths.includes(
-                            proof.key,
-                          )}
-                          onChange={(event) =>
-                            setOrganizationRequestForm((form) => ({
-                              ...form,
-                              requestedTruths: event.target.checked
-                                ? [...form.requestedTruths, proof.key]
-                                : form.requestedTruths.filter(
-                                    (truth) => truth !== proof.key,
-                                  ),
-                            }))
-                          }
-                          className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-500"
-                        />
-                        {proof.label}
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-
-                <SubmitButton disabled={isSubmitting}>Send request</SubmitButton>
-              </form>
-
-              {createdOrganizationRequest ? (
-                <div className="mt-5 rounded-lg border border-emerald-200 bg-white p-4">
-                  <p className="text-sm font-semibold text-slate-950">
-                    Request created
-                  </p>
-                  <p className="mt-1 text-sm leading-6 text-slate-600">
-                    {createdOrganizationRequest.organization.name} requested{" "}
-                    {createdOrganizationRequest.requested_truths
-                      .map(formatProofName)
-                      .join(", ")}
-                    .
-                  </p>
-                  <p className="mt-2 text-xs font-semibold text-emerald-700">
-                    Awaiting user approval
-                  </p>
-                </div>
-              ) : null}
-
-              {organizationProfile ? (
-                <div className="mt-5 space-y-4 border-t border-emerald-100 pt-5">
-                  <div className="rounded-lg border border-emerald-200 bg-white p-4">
-                    <p className="text-sm font-semibold text-slate-950">
-                      {organizationProfile.name}
-                    </p>
-                    <p className="mt-1 text-sm text-slate-600">
-                      {formatCategory(organizationProfile.organization_type)}
-                    </p>
-                    <span className="mt-3 inline-flex w-fit rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-800">
-                      {formatRecordStatus(
-                        organizationProfile.verification_status,
-                      )}
-                    </span>
-                  </div>
-
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    <OrganizationMetric
-                      label="Waiting"
-                      value={String(organizationPendingRequests.length)}
-                    />
-                    <OrganizationMetric
-                      label="Active"
-                      value={String(organizationActiveClaims.length)}
-                    />
-                    <OrganizationMetric
-                      label="Closed"
-                      value={String(organizationClosedClaims.length)}
-                    />
-                  </div>
-
-                  <OrganizationRequestList
-                    title="Pending requests"
-                    emptyText="No user approvals are waiting."
-                    requests={organizationPendingRequests}
-                  />
-
-                  <OrganizationClaimList
-                    title="Active proofs"
-                    emptyText="No active proofs yet."
-                    claims={organizationActiveClaims}
-                  />
-
-                  <OrganizationClaimList
-                    title="Closed proofs"
-                    emptyText="No expired or revoked proofs yet."
-                    claims={organizationClosedClaims}
-                  />
-
-                  <section className="rounded-lg border border-emerald-100 bg-white p-4">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-950">
-                        Webhook endpoint
-                      </p>
-                      <p className="mt-1 text-sm leading-6 text-slate-600">
-                        Receive proof status updates from Kladd.
-                      </p>
-                    </div>
-
-                    <form
-                      className="mt-4 space-y-3"
-                      onSubmit={handleConfigureOrganizationWebhookEndpoint}
-                    >
-                      <TextInput
-                        label="Endpoint URL"
-                        type="url"
-                        value={organizationWebhookURL}
-                        onChange={setOrganizationWebhookURL}
-                        required
-                      />
-                      <SubmitButton disabled={isSubmitting}>
-                        Save endpoint
-                      </SubmitButton>
-                    </form>
-
-                    {organizationWebhookEndpoint ? (
-                      <div className="mt-4 rounded-lg border border-emerald-100 bg-[#f7fbf8] p-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="break-all text-sm font-semibold text-slate-950">
-                              {organizationWebhookEndpoint.url}
-                            </p>
-                            <p className="mt-1 text-xs font-medium text-slate-500">
-                              Updated{" "}
-                              {formatDateTime(
-                                organizationWebhookEndpoint.updated_at,
-                              )}
-                            </p>
-                          </div>
-                          <span className="w-fit rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-800">
-                            {organizationWebhookEndpoint.status}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="mt-4 rounded-lg border border-dashed border-emerald-200 bg-[#f7fbf8] p-3 text-sm font-medium text-slate-500">
-                        No endpoint saved yet.
-                      </p>
-                    )}
-                  </section>
-
-                  <OrganizationWebhookDeliveryList
-                    deliveries={organizationWebhookDeliveries}
-                  />
-
-                  <OrganizationActivityList items={organizationActivityItems} />
-                </div>
-              ) : null}
-            </section>
-
+            {workspaceMode === "personal" ? (
+              <>
             <section className="rounded-lg border border-indigo-100 bg-[#f8f7ff] p-5 shadow-sm">
               <div>
                 <p className="text-sm font-semibold text-indigo-700">
@@ -1697,7 +1782,7 @@ export default function Home() {
               </form>
             </section>
 
-            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <section className="hidden rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
               <div>
                 <p className="text-sm font-semibold text-slate-500">
                   Requests
@@ -1862,6 +1947,8 @@ export default function Home() {
                 </SubmitButton>
               </form>
             </section>
+              </>
+            ) : null}
 
             {(notice || error) && (
               <section
@@ -2529,6 +2616,14 @@ function modeButtonClass(active: boolean) {
   return `h-10 rounded-md text-sm font-semibold transition ${
     active
       ? "bg-white text-indigo-800 shadow-sm"
+      : "text-slate-600 hover:text-slate-950"
+  }`;
+}
+
+function workspaceButtonClass(active: boolean) {
+  return `h-10 rounded-md text-sm font-semibold transition ${
+    active
+      ? "bg-white text-slate-950 shadow-sm"
       : "text-slate-600 hover:text-slate-950"
   }`;
 }
