@@ -157,7 +157,13 @@ type OrganizationRequestForm = {
   durationDays: string;
 };
 
-const navItems = ["Home", "My Records", "Requests", "Proofs", "Security"];
+const navItems = [
+  { label: "Home", targetID: "workspace-home", requiresAuth: false },
+  { label: "My Records", targetID: "my-records", requiresAuth: true },
+  { label: "Requests", targetID: "proof-requests", requiresAuth: true },
+  { label: "Proofs", targetID: "active-proofs", requiresAuth: true },
+  { label: "Security", targetID: "security", requiresAuth: false },
+];
 
 const proofOptions = [
   { key: "identity_verified", label: "Identity proof" },
@@ -981,6 +987,27 @@ export default function Home() {
     setError("");
   }
 
+  function handleWorkspaceNavigation(item: (typeof navItems)[number]) {
+    setWorkspaceMode("personal");
+    setError("");
+
+    const targetID =
+      item.requiresAuth && !signedIn ? "account-access" : item.targetID;
+
+    if (item.requiresAuth && !signedIn) {
+      setNotice(`Sign in to open ${item.label}.`);
+    } else {
+      setNotice("");
+    }
+
+    window.requestAnimationFrame(() => {
+      document.getElementById(targetID)?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }
+
   return (
     <main className="min-h-screen bg-[#eef3f8] text-slate-950">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-4 sm:px-6 lg:px-8">
@@ -1019,12 +1046,14 @@ export default function Home() {
               </div>
               <div className="hidden flex-wrap gap-2 md:flex">
                 {navItems.map((item) => (
-                  <span
-                    key={item}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm"
+                  <button
+                    type="button"
+                    key={item.label}
+                    onClick={() => handleWorkspaceNavigation(item)}
+                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-800"
                   >
-                    {item}
-                  </span>
+                    {item.label}
+                  </button>
                 ))}
               </div>
             </nav>
@@ -1039,7 +1068,10 @@ export default function Home() {
           }`}
         >
           <div className="space-y-5">
-            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <section
+              id="workspace-home"
+              className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
+            >
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
                   <p className="text-sm font-semibold text-emerald-700">
@@ -1138,7 +1170,10 @@ export default function Home() {
                   </dl>
                 </section>
 
-                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <section
+                  id="active-proofs"
+                  className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
+                >
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                       <p className="text-sm font-semibold text-slate-500">
@@ -1188,7 +1223,10 @@ export default function Home() {
                   </div>
                 </section>
 
-                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <section
+                  id="proof-requests"
+                  className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
+                >
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                       <p className="text-sm font-semibold text-slate-500">
@@ -1235,7 +1273,10 @@ export default function Home() {
                   </div>
                 </section>
 
-                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <section
+                  id="my-records"
+                  className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
+                >
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                       <p className="text-sm font-semibold text-slate-500">
@@ -1594,7 +1635,10 @@ export default function Home() {
 
           <aside className="space-y-5">
             {workspaceMode === "personal" ? (
-            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <section
+              id="account-access"
+              className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
+            >
               <div className="grid grid-cols-2 rounded-lg bg-slate-100 p-1">
                 <button
                   type="button"
@@ -1712,7 +1756,10 @@ export default function Home() {
 
             {workspaceMode === "personal" ? (
               <>
-            <section className="rounded-lg border border-indigo-100 bg-[#f8f7ff] p-5 shadow-sm">
+            <section
+              id="security"
+              className="scroll-mt-4 rounded-lg border border-indigo-100 bg-[#f8f7ff] p-5 shadow-sm"
+            >
               <div>
                 <p className="text-sm font-semibold text-indigo-700">
                   Security
