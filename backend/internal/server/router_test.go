@@ -322,6 +322,7 @@ func (authenticator *fakeOrganizationAuthenticator) Authenticate(ctx context.Con
 
 type fakeWebhookEndpointManager struct {
 	endpoint       webhooks.Endpoint
+	deliveries     []webhooks.DeliveryLog
 	err            error
 	input          webhooks.ConfigureEndpointInput
 	organizationID uuid.UUID
@@ -341,6 +342,14 @@ func (manager *fakeWebhookEndpointManager) GetEndpointForOrganization(ctx contex
 		return webhooks.Endpoint{}, manager.err
 	}
 	return manager.endpoint, nil
+}
+
+func (manager *fakeWebhookEndpointManager) ListDeliveriesForOrganization(ctx context.Context, organizationID uuid.UUID) ([]webhooks.DeliveryLog, error) {
+	manager.organizationID = organizationID
+	if manager.err != nil {
+		return nil, manager.err
+	}
+	return manager.deliveries, nil
 }
 
 func newTestRouter(userCreator *fakeUserCreator, userGetter *fakeUserGetter, pinSetter *fakeSecurityPINSetter, authenticator *fakeAuthenticator, evidenceManagers ...*fakeEvidenceManager) http.Handler {
@@ -2023,6 +2032,79 @@ func TestOrganizationWebhookEndpointHandlerMapsMissingEndpoint(t *testing.T) {
 
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusNotFound, response.Body.String())
+	}
+}
+
+func TestOrganizationWebhookDeliveriesHandlerListsSafeDeliveryHistory(t *testing.T) {
+	orgID := uuid.New()
+	deliveryID := uuid.New()
+	manager := &fakeWebhookEndpointManager{
+		deliveries: []webhooks.DeliveryLog{
+			{
+				ID:             deliveryID,
+				EventType:      webhooks.EventClaimApproved,
+				AggregateID:    uuid.New(),
+				OrganizationID: orgID,
+				Status:         webhooks.StatusDelivered,
+				Attempts:       1,
+				CreatedAt:      time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
+				UpdatedAt:      time.Date(2026, 6, 4, 12, 5, 0, 0, time.UTC),
+			},
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{
+			organization: claimrequests.Organization{
+				ID:               orgID,
+				Name:             "Acme Bank",
+				OrganizationType: "bank",
+			},
+		},
+		manager,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/webhook-deliveries", nil)
+	request.Header.Set("X-Kladd-API-Key", "test-api-key")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.organizationID != orgID {
+		t.Fatalf("organization id = %s, want %s", manager.organizationID, orgID)
+	}
+
+	var responseBody struct {
+		Items []webhooks.DeliveryLog `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responseBody); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(responseBody.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(responseBody.Items))
+	}
+	if responseBody.Items[0].ID != deliveryID {
+		t.Fatalf("delivery id = %s, want %s", responseBody.Items[0].ID, deliveryID)
+	}
+
+	body := response.Body.String()
+	for _, forbidden := range []string{"payload_json", "signature", "raw_document", "file_path", "security_pin", "api_key", "key_hash", "truth_value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("response exposed forbidden field %q", forbidden)
+		}
 	}
 }
 

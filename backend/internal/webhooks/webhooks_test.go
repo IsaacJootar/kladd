@@ -24,6 +24,7 @@ type recordingExecutor struct {
 type endpointRecordingStore struct {
 	record         ConfigureEndpointRecord
 	endpoint       Endpoint
+	deliveryLogs   []DeliveryLog
 	err            error
 	organizationID uuid.UUID
 }
@@ -77,6 +78,14 @@ func (store *endpointRecordingStore) GetEndpointForOrganization(ctx context.Cont
 		return Endpoint{}, store.err
 	}
 	return store.endpoint, nil
+}
+
+func (store *endpointRecordingStore) ListDeliveriesForOrganization(ctx context.Context, organizationID uuid.UUID) ([]DeliveryLog, error) {
+	store.organizationID = organizationID
+	if store.err != nil {
+		return nil, store.err
+	}
+	return store.deliveryLogs, nil
 }
 
 func (store *deliveryRecordingStore) ListPendingDeliveries(ctx context.Context, dueAt time.Time, limit int) ([]PendingDelivery, error) {
@@ -208,6 +217,46 @@ func TestEndpointServiceGetEndpointForOrganizationValidatesOrganization(t *testi
 	service := NewEndpointService(&endpointRecordingStore{})
 
 	_, err := service.GetEndpointForOrganization(context.Background(), uuid.Nil)
+	if !errors.Is(err, ErrInvalidOrganizationID) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidOrganizationID)
+	}
+}
+
+func TestEndpointServiceListDeliveriesForOrganizationUsesOrganizationBoundary(t *testing.T) {
+	organizationID := uuid.New()
+	store := &endpointRecordingStore{
+		deliveryLogs: []DeliveryLog{
+			{
+				ID:             uuid.New(),
+				EventType:      EventClaimApproved,
+				AggregateID:    uuid.New(),
+				OrganizationID: organizationID,
+				Status:         StatusDelivered,
+				Attempts:       1,
+				CreatedAt:      time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
+				UpdatedAt:      time.Date(2026, 6, 4, 12, 5, 0, 0, time.UTC),
+			},
+		},
+	}
+	service := NewEndpointService(store)
+
+	deliveries, err := service.ListDeliveriesForOrganization(context.Background(), organizationID)
+	if err != nil {
+		t.Fatalf("list deliveries: %v", err)
+	}
+
+	if store.organizationID != organizationID {
+		t.Fatalf("organization id = %s, want %s", store.organizationID, organizationID)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("deliveries = %d, want 1", len(deliveries))
+	}
+}
+
+func TestEndpointServiceListDeliveriesForOrganizationValidatesOrganization(t *testing.T) {
+	service := NewEndpointService(&endpointRecordingStore{})
+
+	_, err := service.ListDeliveriesForOrganization(context.Background(), uuid.Nil)
 	if !errors.Is(err, ErrInvalidOrganizationID) {
 		t.Fatalf("error = %v, want %v", err, ErrInvalidOrganizationID)
 	}

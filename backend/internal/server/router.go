@@ -84,6 +84,7 @@ type OrganizationAuthenticator interface {
 type OrganizationWebhookEndpointManager interface {
 	ConfigureEndpoint(ctx context.Context, input webhooks.ConfigureEndpointInput) (webhooks.Endpoint, error)
 	GetEndpointForOrganization(ctx context.Context, organizationID uuid.UUID) (webhooks.Endpoint, error)
+	ListDeliveriesForOrganization(ctx context.Context, organizationID uuid.UUID) ([]webhooks.DeliveryLog, error)
 }
 
 func NewRouter(cfg config.Config, userCreator UserCreator, userGetter UserGetter, pinSetter SecurityPINSetter, pinResetter SecurityPINResetter, authenticator Authenticator, evidenceManager EvidenceManager, auditLogLister AuditLogLister, truthDefinitionLister TruthDefinitionLister, claimRequestManager ClaimRequestManager, claimManager ClaimManager) http.Handler {
@@ -118,6 +119,7 @@ func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGett
 		mux.HandleFunc("/api/organization/claims", organizationClaimsHandler(claimManager, organizationAuthenticator))
 		if webhookEndpointManager != nil {
 			mux.HandleFunc("/api/organization/webhook-endpoint", organizationWebhookEndpointHandler(webhookEndpointManager, organizationAuthenticator))
+			mux.HandleFunc("/api/organization/webhook-deliveries", organizationWebhookDeliveriesHandler(webhookEndpointManager, organizationAuthenticator))
 		}
 	}
 	mux.HandleFunc("/api/exchange-pins/resolve", resolveExchangePINHandler(claimManager))
@@ -634,6 +636,30 @@ func organizationWebhookEndpointHandler(webhookEndpointManager OrganizationWebho
 	}
 }
 
+func organizationWebhookDeliveriesHandler(webhookEndpointManager OrganizationWebhookEndpointManager, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		organization, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator)
+		if !ok {
+			return
+		}
+
+		deliveries, err := webhookEndpointManager.ListDeliveriesForOrganization(r.Context(), organization.ID)
+		if err != nil {
+			writeListOrganizationWebhookDeliveriesError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string][]webhooks.DeliveryLog{
+			"items": deliveries,
+		})
+	}
+}
+
 func claimRequestByIDHandler(claimRequestManager ClaimRequestManager, authenticator Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/claim-requests/")
@@ -1110,6 +1136,15 @@ func writeGetOrganizationWebhookEndpointError(w http.ResponseWriter, err error) 
 		writeError(w, http.StatusNotFound, "webhook_endpoint_not_found", "Webhook endpoint is not configured.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load webhook endpoint.")
+	}
+}
+
+func writeListOrganizationWebhookDeliveriesError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, webhooks.ErrInvalidOrganizationID):
+		writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to load webhook deliveries.")
 	}
 }
 

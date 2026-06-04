@@ -80,6 +80,56 @@ WHERE endpoint.organization_id = $1`,
 	return endpoint, nil
 }
 
+func (store PostgresStore) ListDeliveriesForOrganization(ctx context.Context, organizationID uuid.UUID) ([]DeliveryLog, error) {
+	rows, err := store.db.QueryContext(ctx, `
+SELECT
+    id,
+    event_type,
+    aggregate_id,
+    organization_id,
+    status,
+    attempts,
+    next_attempt_at,
+    delivered_at,
+    created_at,
+    updated_at
+FROM webhook_deliveries
+WHERE organization_id = $1
+ORDER BY created_at DESC`,
+		organizationID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	deliveries := []DeliveryLog{}
+	for rows.Next() {
+		var delivery DeliveryLog
+		if err := rows.Scan(
+			&delivery.ID,
+			&delivery.EventType,
+			&delivery.AggregateID,
+			&delivery.OrganizationID,
+			&delivery.Status,
+			&delivery.Attempts,
+			&delivery.NextAttemptAt,
+			&delivery.DeliveredAt,
+			&delivery.CreatedAt,
+			&delivery.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		deliveries = append(deliveries, delivery)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return deliveries, nil
+}
+
 func (store PostgresStore) ListPendingDeliveries(ctx context.Context, dueAt time.Time, limit int) ([]PendingDelivery, error) {
 	if limit < 1 {
 		limit = 25

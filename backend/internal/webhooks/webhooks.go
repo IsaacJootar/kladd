@@ -76,6 +76,19 @@ type Endpoint struct {
 	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
+type DeliveryLog struct {
+	ID             uuid.UUID  `json:"id"`
+	EventType      string     `json:"event_type"`
+	AggregateID    uuid.UUID  `json:"aggregate_id"`
+	OrganizationID uuid.UUID  `json:"organization_id"`
+	Status         string     `json:"status"`
+	Attempts       int        `json:"attempts"`
+	NextAttemptAt  *time.Time `json:"next_attempt_at,omitempty"`
+	DeliveredAt    *time.Time `json:"delivered_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
 type ConfigureEndpointInput struct {
 	OrganizationName string
 	OrganizationType string
@@ -124,6 +137,7 @@ type txExecutor interface {
 type EndpointStore interface {
 	ConfigureEndpoint(ctx context.Context, record ConfigureEndpointRecord) (Endpoint, error)
 	GetEndpointForOrganization(ctx context.Context, organizationID uuid.UUID) (Endpoint, error)
+	ListDeliveriesForOrganization(ctx context.Context, organizationID uuid.UUID) ([]DeliveryLog, error)
 }
 
 type DeliveryStore interface {
@@ -194,6 +208,14 @@ func (service EndpointService) GetEndpointForOrganization(ctx context.Context, o
 	}
 
 	return service.store.GetEndpointForOrganization(ctx, organizationID)
+}
+
+func (service EndpointService) ListDeliveriesForOrganization(ctx context.Context, organizationID uuid.UUID) ([]DeliveryLog, error) {
+	if organizationID == uuid.Nil {
+		return nil, ErrInvalidOrganizationID
+	}
+
+	return service.store.ListDeliveriesForOrganization(ctx, organizationID)
 }
 
 func (service DeliveryService) DeliverPending(ctx context.Context) (DeliverySummary, error) {
