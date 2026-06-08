@@ -1159,6 +1159,8 @@ func writeCreateClaimRequestError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_purpose", "Purpose is required.")
 	case errors.Is(err, claimrequests.ErrInvalidScope):
 		writeError(w, http.StatusBadRequest, "invalid_scope", "At least one requested proof is required.")
+	case errors.Is(err, claimrequests.ErrUnknownTruth):
+		writeError(w, http.StatusBadRequest, "unsupported_proof", "Requested proof is not supported by Kladd.")
 	case errors.Is(err, claimrequests.ErrInvalidDuration):
 		writeError(w, http.StatusBadRequest, "invalid_duration", "Duration must be at least 1 day.")
 	default:

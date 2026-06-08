@@ -50,7 +50,7 @@ func main() {
 	truthStore := truths.NewPostgresStore(db)
 	truthService := truths.NewService(truthStore)
 	claimRequestStore := claimrequests.NewPostgresStore(db, cfg.WebhookSigningSecret)
-	claimRequestService := claimrequests.NewService(claimRequestStore, pinValidationService)
+	claimRequestService := claimrequests.NewServiceWithTruthRegistry(claimRequestStore, pinValidationService, truthService)
 	claimStore := claims.NewPostgresStore(db, cfg.WebhookSigningSecret)
 	claimService := claims.NewService(claimStore)
 	orgAuthStore := orgauth.NewPostgresStore(db)

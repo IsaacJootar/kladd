@@ -184,6 +184,8 @@ go run ./cmd/orgkey -organization "Acme Bank" -type bank -name "Local setup"
 
 This creates a pending claim request for the target user. It must not issue a claim or release truths. The user must still approve with their Security PIN before any claim becomes active.
 
+`requested_truths` must contain supported Truth Registry keys only. Unsupported proof keys are rejected before a claim request is created.
+
 GET /api/organization/claim-requests
 
 Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.

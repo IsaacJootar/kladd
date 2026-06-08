@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/google/uuid"
 )
 
@@ -27,6 +28,7 @@ var (
 	ErrInvalidPurpose        = errors.New("purpose is required")
 	ErrInvalidScope          = errors.New("requested truths are required")
 	ErrInvalidDuration       = errors.New("duration must be at least 1 day")
+	ErrUnknownTruth          = errors.New("requested truth is not supported")
 	ErrInvalidSecurityPIN    = errors.New("security pin is required")
 	ErrClaimRequestNotFound  = errors.New("claim request not found")
 	ErrClaimRequestExpired   = errors.New("claim request has expired")
@@ -128,9 +130,14 @@ type SecurityPINValidator interface {
 	Validate(ctx context.Context, userID uuid.UUID, pin string) error
 }
 
+type TruthRegistry interface {
+	ListDefinitions(ctx context.Context) ([]truths.Definition, error)
+}
+
 type Service struct {
-	store        Store
-	pinValidator SecurityPINValidator
+	store         Store
+	pinValidator  SecurityPINValidator
+	truthRegistry TruthRegistry
 }
 
 func NewService(store Store, validators ...SecurityPINValidator) Service {
@@ -145,9 +152,20 @@ func NewService(store Store, validators ...SecurityPINValidator) Service {
 	}
 }
 
+func NewServiceWithTruthRegistry(store Store, validator SecurityPINValidator, truthRegistry TruthRegistry) Service {
+	return Service{
+		store:         store,
+		pinValidator:  validator,
+		truthRegistry: truthRegistry,
+	}
+}
+
 func (service Service) Create(ctx context.Context, input CreateInput) (ClaimRequest, error) {
 	record, err := prepareCreateRecord(input)
 	if err != nil {
+		return ClaimRequest{}, err
+	}
+	if err := service.validateRequestedTruths(ctx, record.Scope.RequestedTruths); err != nil {
 		return ClaimRequest{}, err
 	}
 
@@ -290,6 +308,30 @@ func prepareCreateRecord(input CreateInput) (CreateRecord, error) {
 		Status:    StatusPendingApproval,
 		ExpiresAt: time.Now().UTC().Add(time.Duration(input.DurationDays) * 24 * time.Hour),
 	}, nil
+}
+
+func (service Service) validateRequestedTruths(ctx context.Context, requestedTruths []string) error {
+	if service.truthRegistry == nil {
+		return nil
+	}
+
+	definitions, err := service.truthRegistry.ListDefinitions(ctx)
+	if err != nil {
+		return err
+	}
+
+	supported := map[string]bool{}
+	for _, definition := range definitions {
+		supported[definition.TruthKey] = true
+	}
+
+	for _, requestedTruth := range requestedTruths {
+		if !supported[requestedTruth] {
+			return ErrUnknownTruth
+		}
+	}
+
+	return nil
 }
 
 func cleanRequestedTruths(values []string) []string {

@@ -2736,6 +2736,7 @@ func TestClaimRequestsHandlerMapsCreateErrors(t *testing.T) {
 		{name: "invalid organization", err: claimrequests.ErrInvalidOrganization, status: http.StatusBadRequest},
 		{name: "invalid purpose", err: claimrequests.ErrInvalidPurpose, status: http.StatusBadRequest},
 		{name: "invalid scope", err: claimrequests.ErrInvalidScope, status: http.StatusBadRequest},
+		{name: "unsupported proof", err: claimrequests.ErrUnknownTruth, status: http.StatusBadRequest},
 		{name: "invalid duration", err: claimrequests.ErrInvalidDuration, status: http.StatusBadRequest},
 		{name: "unknown error", err: errors.New("boom"), status: http.StatusInternalServerError},
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IsaacJootar/kladd/backend/internal/truths"
 	"github.com/google/uuid"
 )
 
@@ -114,6 +115,20 @@ func (validator *recordingPINValidator) Validate(ctx context.Context, userID uui
 	return validator.err
 }
 
+type recordingTruthRegistry struct {
+	definitions []truths.Definition
+	called      bool
+	err         error
+}
+
+func (registry *recordingTruthRegistry) ListDefinitions(ctx context.Context) ([]truths.Definition, error) {
+	registry.called = true
+	if registry.err != nil {
+		return nil, registry.err
+	}
+	return registry.definitions, nil
+}
+
 func TestServiceCreatePreparesPendingRequest(t *testing.T) {
 	userID := uuid.New()
 	store := &recordingStore{}
@@ -148,6 +163,66 @@ func TestServiceCreatePreparesPendingRequest(t *testing.T) {
 	}
 	if store.record.ExpiresAt.IsZero() {
 		t.Fatal("expected expiration to be set")
+	}
+}
+
+func TestServiceCreateValidatesRequestedTruthsAgainstRegistry(t *testing.T) {
+	userID := uuid.New()
+	store := &recordingStore{}
+	registry := &recordingTruthRegistry{
+		definitions: []truths.Definition{
+			{TruthKey: "identity_verified"},
+			{TruthKey: "degree_verified"},
+		},
+	}
+	service := NewServiceWithTruthRegistry(store, nil, registry)
+
+	_, err := service.Create(context.Background(), CreateInput{
+		UserID:           userID,
+		OrganizationName: "Acme Bank",
+		OrganizationType: "bank",
+		Purpose:          "Employment onboarding",
+		RequestedTruths:  []string{"identity_verified", "unsupported_truth"},
+		DurationDays:     30,
+	})
+	if !errors.Is(err, ErrUnknownTruth) {
+		t.Fatalf("error = %v, want %v", err, ErrUnknownTruth)
+	}
+	if !registry.called {
+		t.Fatal("expected truth registry to be checked")
+	}
+	if store.record.ID != uuid.Nil {
+		t.Fatal("claim request was stored with unsupported truth")
+	}
+}
+
+func TestServiceCreateUsesRegistryForSupportedTruths(t *testing.T) {
+	userID := uuid.New()
+	store := &recordingStore{}
+	registry := &recordingTruthRegistry{
+		definitions: []truths.Definition{
+			{TruthKey: "identity_verified"},
+			{TruthKey: "degree_verified"},
+		},
+	}
+	service := NewServiceWithTruthRegistry(store, nil, registry)
+
+	request, err := service.Create(context.Background(), CreateInput{
+		UserID:           userID,
+		OrganizationName: "Acme Bank",
+		OrganizationType: "bank",
+		Purpose:          "Employment onboarding",
+		RequestedTruths:  []string{"identity_verified", "degree_verified"},
+		DurationDays:     30,
+	})
+	if err != nil {
+		t.Fatalf("create claim request: %v", err)
+	}
+	if request.ID == uuid.Nil {
+		t.Fatal("expected request to be created")
+	}
+	if !registry.called {
+		t.Fatal("expected truth registry to be checked")
 	}
 }
 
