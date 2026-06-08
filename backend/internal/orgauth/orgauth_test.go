@@ -83,6 +83,16 @@ func (store *recordingStore) RecordLogin(ctx context.Context, account Account) e
 	return store.err
 }
 
+func (store *recordingStore) GetOrganization(ctx context.Context, id uuid.UUID) (claimrequests.Organization, error) {
+	if store.err != nil {
+		return claimrequests.Organization{}, store.err
+	}
+	if store.organization.ID != uuid.Nil {
+		return store.organization, nil
+	}
+	return claimrequests.Organization{}, ErrInvalidOrganization
+}
+
 func TestServiceAuthenticateHashesAPIKey(t *testing.T) {
 	orgID := uuid.New()
 	store := &recordingStore{
@@ -307,5 +317,42 @@ func TestServiceLoginRejectsBadPassword(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("err = %v, want %v", err, ErrInvalidCredentials)
+	}
+}
+
+func TestServiceAuthenticateTokenReturnsOrganization(t *testing.T) {
+	orgID := uuid.New()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	tokenManager := auth.NewTokenManagerWithClock("test-secret", time.Hour, func() time.Time {
+		return now
+	})
+	token, _, err := tokenManager.Issue(orgID)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	service := NewServiceWithTokenManager(&recordingStore{
+		organization: claimrequests.Organization{
+			ID:               orgID,
+			Name:             "Acme Bank",
+			OrganizationType: "bank",
+		},
+	}, tokenManager)
+
+	organization, err := service.AuthenticateToken(context.Background(), token)
+	if err != nil {
+		t.Fatalf("authenticate token: %v", err)
+	}
+	if organization.ID != orgID {
+		t.Fatalf("organization id = %s, want %s", organization.ID, orgID)
+	}
+}
+
+func TestServiceAuthenticateTokenRejectsInvalidToken(t *testing.T) {
+	service := NewServiceWithTokenManager(&recordingStore{}, auth.NewTokenManager("test-secret", time.Hour))
+
+	_, err := service.AuthenticateToken(context.Background(), "not-a-token")
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("err = %v, want %v", err, ErrInvalidToken)
 	}
 }

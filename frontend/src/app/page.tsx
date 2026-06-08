@@ -5,6 +5,7 @@ import Image from "next/image";
 import QRCode from "qrcode";
 
 type Mode = "register" | "login";
+type OrganizationMode = "register" | "login";
 type WorkspaceMode = "personal" | "organization";
 
 type User = {
@@ -29,6 +30,13 @@ type LoginResponse = {
   token_type: string;
   expires_at: string;
   user: User;
+};
+
+type OrganizationLoginResponse = {
+  access_token: string;
+  token_type: string;
+  expires_at: string;
+  organization: Organization;
 };
 
 type PinResponse = {
@@ -142,11 +150,22 @@ type ProofPreview = {
 };
 
 type OrganizationRequestForm = {
-  apiKey: string;
   userEmail: string;
   purpose: string;
   requestedTruths: string[];
   durationDays: string;
+};
+
+type OrganizationRegisterForm = {
+  name: string;
+  email: string;
+  password: string;
+  organizationType: string;
+};
+
+type OrganizationLoginForm = {
+  email: string;
+  password: string;
 };
 
 const navItems = [
@@ -218,15 +237,28 @@ const emptyEvidenceForm = {
 };
 
 const emptyOrganizationRequestForm: OrganizationRequestForm = {
-  apiKey: "",
   userEmail: "",
   purpose: "Account opening",
   requestedTruths: ["identity_verified"],
   durationDays: "30",
 };
 
+const emptyOrganizationRegisterForm: OrganizationRegisterForm = {
+  name: "",
+  email: "",
+  password: "",
+  organizationType: "organization",
+};
+
+const emptyOrganizationLoginForm: OrganizationLoginForm = {
+  email: "",
+  password: "",
+};
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("register");
+  const [organizationMode, setOrganizationMode] =
+    useState<OrganizationMode>("register");
   const [workspaceMode, setWorkspaceMode] =
     useState<WorkspaceMode>("personal");
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
@@ -248,6 +280,18 @@ export default function Home() {
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [organizationRequestForm, setOrganizationRequestForm] = useState(
     emptyOrganizationRequestForm,
+  );
+  const [organizationRegisterForm, setOrganizationRegisterForm] = useState(
+    emptyOrganizationRegisterForm,
+  );
+  const [organizationLoginForm, setOrganizationLoginForm] = useState(
+    emptyOrganizationLoginForm,
+  );
+  const [organizationToken, setOrganizationToken] = useState(() =>
+    readSessionValue("kladd_organization_access_token"),
+  );
+  const [organizationTokenExpiry, setOrganizationTokenExpiry] = useState(() =>
+    readSessionValue("kladd_organization_token_expiry"),
   );
   const [createdOrganizationRequest, setCreatedOrganizationRequest] =
     useState<ClaimRequest | null>(null);
@@ -276,7 +320,7 @@ export default function Home() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const signedIn = Boolean(token && currentUser);
-  const organizationSignedIn = Boolean(organizationProfile);
+  const organizationSignedIn = Boolean(organizationToken && organizationProfile);
   const pendingClaimRequests = useMemo(
     () =>
       claimRequests.filter((request) => request.status === "pending_approval"),
@@ -366,6 +410,32 @@ export default function Home() {
       ignore = true;
     };
   }, [token]);
+
+  useEffect(() => {
+    if (!organizationToken) {
+      return;
+    }
+
+    let ignore = false;
+    loadOrganizationWorkspace(organizationToken)
+      .then(() => {
+        if (!ignore) {
+          setNotice("");
+        }
+      })
+      .catch(() => {
+        if (!ignore) {
+          clearOrganizationAuthStorage();
+          setOrganizationToken("");
+          setOrganizationTokenExpiry("");
+          signOutOrganization(false);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [organizationToken]);
 
   useEffect(() => {
     let ignore = false;
@@ -565,12 +635,11 @@ export default function Home() {
   ) {
     event.preventDefault();
 
-    const apiKey = organizationRequestForm.apiKey.trim();
     const userEmail = organizationRequestForm.userEmail.trim();
     const purpose = organizationRequestForm.purpose.trim();
 
-    if (!apiKey) {
-      setError("Enter your organization API key.");
+    if (!organizationToken) {
+      setError("Sign in to your organization before sending a request.");
       return;
     }
 
@@ -597,7 +666,7 @@ export default function Home() {
         "/organization/claim-requests",
         {
           method: "POST",
-          apiKey,
+          token: organizationToken,
           body: JSON.stringify({
             user_email: userEmail,
             purpose,
@@ -612,10 +681,7 @@ export default function Home() {
         request,
         ...requests.filter((item) => item.id !== request.id),
       ]);
-      setOrganizationRequestForm((form) => ({
-        ...emptyOrganizationRequestForm,
-        apiKey: form.apiKey,
-      }));
+      setOrganizationRequestForm(emptyOrganizationRequestForm);
       setNotice(
         "Organization request sent. The user must approve it with their Security PIN before any proof is released.",
       );
@@ -626,50 +692,29 @@ export default function Home() {
     }
   }
 
-  async function handleLoadOrganizationWorkspace() {
-    const apiKey = organizationRequestForm.apiKey.trim();
-    if (!apiKey) {
-      setError("Enter your organization API key.");
-      return;
-    }
-
+  async function handleRegisterOrganization(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     setIsSubmitting(true);
     clearMessages();
 
     try {
-      const [
-        profile,
-        requestsResponse,
-        claimsResponse,
-        webhookEndpoint,
-        webhookDeliveriesResponse,
-        activityResponse,
-      ] = await Promise.all([
-        apiRequest<Organization>("/organization/me", {
-          method: "GET",
-          apiKey,
+      await apiRequest<Organization>("/organizations", {
+        method: "POST",
+        body: JSON.stringify({
+          name: organizationRegisterForm.name,
+          email: organizationRegisterForm.email,
+          password: organizationRegisterForm.password,
+          organization_type: organizationRegisterForm.organizationType,
         }),
-        apiRequest<ClaimRequestListResponse>("/organization/claim-requests", {
-          method: "GET",
-          apiKey,
-        }),
-        apiRequest<ClaimListResponse>("/organization/claims", {
-          method: "GET",
-          apiKey,
-        }),
-        loadOrganizationWebhookEndpoint(apiKey),
-        loadOrganizationWebhookDeliveries(apiKey),
-        loadOrganizationActivityItems(apiKey),
-      ]);
+      });
 
-      setOrganizationProfile(profile);
-      setOrganizationClaimRequests(requestsResponse.items);
-      setOrganizationClaims(claimsResponse.items);
-      setOrganizationWebhookEndpoint(webhookEndpoint);
-      setOrganizationWebhookURL(webhookEndpoint?.url ?? "");
-      setOrganizationWebhookDeliveries(webhookDeliveriesResponse.items);
-      setOrganizationActivityItems(activityResponse.items);
-      setNotice("Organization workspace loaded.");
+      const login = await organizationLoginWith(
+        organizationRegisterForm.email,
+        organizationRegisterForm.password,
+      );
+      setOrganizationRegisterForm(emptyOrganizationRegisterForm);
+      await loadOrganizationWorkspace(login.access_token);
+      setNotice("Organization account created and signed in.");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -677,15 +722,69 @@ export default function Home() {
     }
   }
 
+  async function handleLoginOrganization(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const login = await organizationLoginWith(
+        organizationLoginForm.email,
+        organizationLoginForm.password,
+      );
+      setOrganizationLoginForm(emptyOrganizationLoginForm);
+      await loadOrganizationWorkspace(login.access_token);
+      setNotice("Organization signed in.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function loadOrganizationWorkspace(accessToken: string) {
+    const [
+      profile,
+      requestsResponse,
+      claimsResponse,
+      webhookEndpoint,
+      webhookDeliveriesResponse,
+      activityResponse,
+    ] = await Promise.all([
+      apiRequest<Organization>("/organization/me", {
+        method: "GET",
+        token: accessToken,
+      }),
+      apiRequest<ClaimRequestListResponse>("/organization/claim-requests", {
+        method: "GET",
+        token: accessToken,
+      }),
+      apiRequest<ClaimListResponse>("/organization/claims", {
+        method: "GET",
+        token: accessToken,
+      }),
+      loadOrganizationWebhookEndpoint(accessToken),
+      loadOrganizationWebhookDeliveries(accessToken),
+      loadOrganizationActivityItems(accessToken),
+    ]);
+
+    setOrganizationProfile(profile);
+    setOrganizationClaimRequests(requestsResponse.items);
+    setOrganizationClaims(claimsResponse.items);
+    setOrganizationWebhookEndpoint(webhookEndpoint);
+    setOrganizationWebhookURL(webhookEndpoint?.url ?? "");
+    setOrganizationWebhookDeliveries(webhookDeliveriesResponse.items);
+    setOrganizationActivityItems(activityResponse.items);
+  }
+
   async function handleConfigureOrganizationWebhookEndpoint(
     event: FormEvent<HTMLFormElement>,
   ) {
     event.preventDefault();
 
-    const apiKey = organizationRequestForm.apiKey.trim();
     const url = organizationWebhookURL.trim();
-    if (!apiKey) {
-      setError("Enter your organization API key.");
+    if (!organizationToken) {
+      setError("Sign in to your organization before saving a webhook endpoint.");
       return;
     }
     if (!url) {
@@ -701,12 +800,14 @@ export default function Home() {
         "/organization/webhook-endpoint",
         {
           method: "POST",
-          apiKey,
+          token: organizationToken,
           body: JSON.stringify({ url }),
         },
       );
-      const deliveriesResponse = await loadOrganizationWebhookDeliveries(apiKey);
-      const activityResponse = await loadOrganizationActivityItems(apiKey);
+      const deliveriesResponse =
+        await loadOrganizationWebhookDeliveries(organizationToken);
+      const activityResponse =
+        await loadOrganizationActivityItems(organizationToken);
       setOrganizationWebhookEndpoint(endpoint);
       setOrganizationWebhookURL(endpoint.url);
       setOrganizationWebhookDeliveries(deliveriesResponse.items);
@@ -906,6 +1007,28 @@ export default function Home() {
     return login;
   }
 
+  async function organizationLoginWith(email: string, password: string) {
+    const login = await apiRequest<OrganizationLoginResponse>(
+      "/organization/auth/login",
+      {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      },
+    );
+    setOrganizationToken(login.access_token);
+    setOrganizationTokenExpiry(login.expires_at);
+    setOrganizationProfile(login.organization);
+    window.sessionStorage.setItem(
+      "kladd_organization_access_token",
+      login.access_token,
+    );
+    window.sessionStorage.setItem(
+      "kladd_organization_token_expiry",
+      login.expires_at,
+    );
+    return login;
+  }
+
   function signOut() {
     setToken("");
     setTokenExpiry("");
@@ -926,7 +1049,9 @@ export default function Home() {
     setError("");
   }
 
-  function signOutOrganization() {
+  function signOutOrganization(showNotice = true) {
+    setOrganizationToken("");
+    setOrganizationTokenExpiry("");
     setOrganizationProfile(null);
     setOrganizationClaimRequests([]);
     setOrganizationClaims([]);
@@ -936,7 +1061,11 @@ export default function Home() {
     setOrganizationActivityItems([]);
     setCreatedOrganizationRequest(null);
     setOrganizationRequestForm(emptyOrganizationRequestForm);
-    setNotice("Organization signed out.");
+    setOrganizationLoginForm(emptyOrganizationLoginForm);
+    clearOrganizationAuthStorage();
+    if (showNotice) {
+      setNotice("Organization signed out.");
+    }
     setError("");
   }
 
@@ -1061,7 +1190,7 @@ export default function Home() {
                 {workspaceMode === "organization" && organizationSignedIn ? (
                   <button
                     type="button"
-                    onClick={signOutOrganization}
+                    onClick={() => signOutOrganization()}
                     className="h-10 rounded-md border border-emerald-200 bg-white px-4 text-sm font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50"
                   >
                     Sign out organization
@@ -1704,42 +1833,130 @@ export default function Home() {
 
             {workspaceMode === "organization" ? (
               <section className="rounded-lg border border-emerald-100 bg-white p-5 shadow-sm">
-                <p className="text-sm font-semibold text-emerald-700">
-                  Organization sign in
-                </p>
-                <h2 className="mt-1 text-lg font-semibold tracking-normal">
-                  Use your API key
-                </h2>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
-                  Load your organization workspace to request proofs and track
-                  verification results.
-                </p>
-
-                <div className="mt-5 space-y-4">
-                  <TextInput
-                    label="Organization API key"
-                    type="password"
-                    value={organizationRequestForm.apiKey}
-                    onChange={(value) =>
-                      setOrganizationRequestForm((form) => ({
-                        ...form,
-                        apiKey: value,
-                      }))
-                    }
-                    required
-                  />
-
+                <div className="grid grid-cols-2 rounded-lg bg-emerald-50 p-1">
                   <button
                     type="button"
-                    onClick={handleLoadOrganizationWorkspace}
-                    disabled={isSubmitting}
-                    className="h-11 w-full rounded-md bg-emerald-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                    onClick={() => setOrganizationMode("register")}
+                    className={modeButtonClass(organizationMode === "register")}
                   >
-                    {organizationSignedIn
-                      ? "Reload organization"
-                      : "Sign in organization"}
+                    Register
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOrganizationMode("login")}
+                    className={modeButtonClass(organizationMode === "login")}
+                  >
+                    Login
                   </button>
                 </div>
+
+                {organizationMode === "register" ? (
+                  <form
+                    className="mt-5 space-y-4"
+                    onSubmit={handleRegisterOrganization}
+                  >
+                    <TextInput
+                      label="Organization name"
+                      value={organizationRegisterForm.name}
+                      onChange={(value) =>
+                        setOrganizationRegisterForm((form) => ({
+                          ...form,
+                          name: value,
+                        }))
+                      }
+                      required
+                    />
+                    <TextInput
+                      label="Work email"
+                      type="email"
+                      value={organizationRegisterForm.email}
+                      onChange={(value) =>
+                        setOrganizationRegisterForm((form) => ({
+                          ...form,
+                          email: value,
+                        }))
+                      }
+                      required
+                    />
+                    <TextInput
+                      label="Password"
+                      type="password"
+                      value={organizationRegisterForm.password}
+                      onChange={(value) =>
+                        setOrganizationRegisterForm((form) => ({
+                          ...form,
+                          password: value,
+                        }))
+                      }
+                      minLength={8}
+                      required
+                    />
+                    <label className="block">
+                      <span className="text-sm font-semibold text-slate-700">
+                        Organization type
+                      </span>
+                      <select
+                        value={organizationRegisterForm.organizationType}
+                        onChange={(event) =>
+                          setOrganizationRegisterForm((form) => ({
+                            ...form,
+                            organizationType: event.target.value,
+                          }))
+                        }
+                        className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
+                      >
+                        <option value="organization">Organization</option>
+                        <option value="bank">Bank</option>
+                        <option value="employer">Employer</option>
+                        <option value="school">School</option>
+                        <option value="healthcare">Healthcare</option>
+                        <option value="government">Government</option>
+                      </select>
+                    </label>
+                    <SubmitButton disabled={isSubmitting}>
+                      Create organization
+                    </SubmitButton>
+                  </form>
+                ) : (
+                  <form
+                    className="mt-5 space-y-4"
+                    onSubmit={handleLoginOrganization}
+                  >
+                    <TextInput
+                      label="Work email"
+                      type="email"
+                      value={organizationLoginForm.email}
+                      onChange={(value) =>
+                        setOrganizationLoginForm((form) => ({
+                          ...form,
+                          email: value,
+                        }))
+                      }
+                      required
+                    />
+                    <TextInput
+                      label="Password"
+                      type="password"
+                      value={organizationLoginForm.password}
+                      onChange={(value) =>
+                        setOrganizationLoginForm((form) => ({
+                          ...form,
+                          password: value,
+                        }))
+                      }
+                      required
+                    />
+                    <SubmitButton disabled={isSubmitting}>
+                      Sign in organization
+                    </SubmitButton>
+                  </form>
+                )}
+
+                {organizationSignedIn ? (
+                  <p className="mt-4 rounded-lg border border-emerald-100 bg-[#f7fbf8] p-3 text-sm font-medium text-emerald-800">
+                    Signed in until {formatDateTime(organizationTokenExpiry)}.
+                  </p>
+                ) : null}
               </section>
             ) : null}
 
@@ -2547,6 +2764,11 @@ function clearAuthStorage() {
   window.sessionStorage.removeItem("kladd_token_expiry");
 }
 
+function clearOrganizationAuthStorage() {
+  window.sessionStorage.removeItem("kladd_organization_access_token");
+  window.sessionStorage.removeItem("kladd_organization_token_expiry");
+}
+
 function modeButtonClass(active: boolean) {
   return `h-10 rounded-md text-sm font-semibold transition ${
     active
@@ -2653,11 +2875,11 @@ async function loadClaims(accessToken: string) {
   return response.items;
 }
 
-async function loadOrganizationWebhookEndpoint(apiKey: string) {
+async function loadOrganizationWebhookEndpoint(accessToken: string) {
   try {
     return await apiRequest<WebhookEndpoint>("/organization/webhook-endpoint", {
       method: "GET",
-      apiKey,
+      token: accessToken,
     });
   } catch (err) {
     if (readError(err) === "Webhook endpoint is not configured.") {
@@ -2668,20 +2890,20 @@ async function loadOrganizationWebhookEndpoint(apiKey: string) {
   }
 }
 
-async function loadOrganizationWebhookDeliveries(apiKey: string) {
+async function loadOrganizationWebhookDeliveries(accessToken: string) {
   return apiRequest<WebhookDeliveryListResponse>(
     "/organization/webhook-deliveries",
     {
       method: "GET",
-      apiKey,
+      token: accessToken,
     },
   );
 }
 
-async function loadOrganizationActivityItems(apiKey: string) {
+async function loadOrganizationActivityItems(accessToken: string) {
   return apiRequest<ActivityListResponse>("/organization/audit-logs", {
     method: "GET",
-    apiKey,
+    token: accessToken,
   });
 }
 

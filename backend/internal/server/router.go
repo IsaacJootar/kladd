@@ -80,6 +80,7 @@ type ClaimManager interface {
 
 type OrganizationAuthenticator interface {
 	Authenticate(ctx context.Context, apiKey string) (claimrequests.Organization, error)
+	AuthenticateToken(ctx context.Context, tokenString string) (claimrequests.Organization, error)
 }
 
 type OrganizationAccountManager interface {
@@ -1355,9 +1356,24 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request, authenticator A
 }
 
 func authenticateOrganizationRequest(w http.ResponseWriter, r *http.Request, authenticator OrganizationAuthenticator) (claimrequests.Organization, bool) {
+	if tokenString, ok := bearerToken(r.Header.Get("Authorization")); ok {
+		organization, err := authenticator.AuthenticateToken(r.Context(), tokenString)
+		if err != nil {
+			switch {
+			case errors.Is(err, orgauth.ErrInvalidToken):
+				writeError(w, http.StatusUnauthorized, "invalid_organization_token", "Organization access token is invalid or expired.")
+			default:
+				writeError(w, http.StatusInternalServerError, "server_error", "Unable to authenticate organization.")
+			}
+			return claimrequests.Organization{}, false
+		}
+
+		return organization, true
+	}
+
 	apiKey := strings.TrimSpace(r.Header.Get("X-Kladd-API-Key"))
 	if apiKey == "" {
-		writeError(w, http.StatusUnauthorized, "organization_api_key_required", "Organization API key is required.")
+		writeError(w, http.StatusUnauthorized, "organization_auth_required", "Organization sign-in or API key is required.")
 		return claimrequests.Organization{}, false
 	}
 

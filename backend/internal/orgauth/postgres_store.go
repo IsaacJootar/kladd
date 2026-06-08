@@ -98,6 +98,33 @@ WHERE key_hash = $1`,
 	return organization, nil
 }
 
+func (store PostgresStore) GetOrganization(ctx context.Context, id uuid.UUID) (claimrequests.Organization, error) {
+	var organization claimrequests.Organization
+	err := store.db.QueryRowContext(ctx, `
+SELECT
+    id,
+    name,
+    organization_type,
+    verification_status
+FROM organizations
+WHERE id = $1`,
+		id,
+	).Scan(
+		&organization.ID,
+		&organization.Name,
+		&organization.OrganizationType,
+		&organization.VerificationStatus,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return claimrequests.Organization{}, ErrInvalidOrganization
+		}
+		return claimrequests.Organization{}, err
+	}
+
+	return organization, nil
+}
+
 func (store PostgresStore) RegisterAccount(ctx context.Context, record RegisterRecord) (Account, error) {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {

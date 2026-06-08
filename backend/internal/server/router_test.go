@@ -321,12 +321,21 @@ type fakeOrganizationAuthenticator struct {
 	loginResult   orgauth.LoginResult
 	err           error
 	apiKey        string
+	token         string
 	registerInput orgauth.RegisterInput
 	loginInput    orgauth.LoginInput
 }
 
 func (authenticator *fakeOrganizationAuthenticator) Authenticate(ctx context.Context, apiKey string) (claimrequests.Organization, error) {
 	authenticator.apiKey = apiKey
+	if authenticator.err != nil {
+		return claimrequests.Organization{}, authenticator.err
+	}
+	return authenticator.organization, nil
+}
+
+func (authenticator *fakeOrganizationAuthenticator) AuthenticateToken(ctx context.Context, tokenString string) (claimrequests.Organization, error) {
+	authenticator.token = tokenString
 	if authenticator.err != nil {
 		return claimrequests.Organization{}, authenticator.err
 	}
@@ -1889,6 +1898,48 @@ func TestOrganizationProfileHandlerReturnsOrganization(t *testing.T) {
 		if strings.Contains(responseBody, forbidden) {
 			t.Fatalf("response exposed forbidden field %q", forbidden)
 		}
+	}
+}
+
+func TestOrganizationProfileHandlerAcceptsBearerToken(t *testing.T) {
+	orgID := uuid.New()
+	orgAuthenticator := &fakeOrganizationAuthenticator{
+		organization: claimrequests.Organization{
+			ID:                 orgID,
+			Name:               "Acme Bank",
+			OrganizationType:   "bank",
+			VerificationStatus: "verified",
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{userID: uuid.New()},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		&fakeTruthDefinitionLister{},
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		orgAuthenticator,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/organization/me", nil)
+	request.Header.Set("Authorization", "Bearer org-session-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if orgAuthenticator.token != "org-session-token" {
+		t.Fatalf("token = %q, want org-session-token", orgAuthenticator.token)
+	}
+	if orgAuthenticator.apiKey != "" {
+		t.Fatalf("api key = %q, want empty because bearer token was used", orgAuthenticator.apiKey)
 	}
 }
 

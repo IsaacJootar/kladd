@@ -2,7 +2,8 @@
 
 ## Authentication
 - JWT access tokens
-- API keys for organizations
+- JWT access tokens for organizations
+- API keys for organization integrations
 
 ## Account Endpoints
 - POST /api/users
@@ -21,6 +22,8 @@
 
 ## Core Endpoints
 - POST /api/claim-requests
+- POST /api/organizations
+- POST /api/organization/auth/login
 - GET /api/organization/me
 - GET /api/organization/audit-logs
 - POST /api/organization/claim-requests
@@ -60,6 +63,32 @@ Create user responses must not include passwords, password hashes, raw documents
 ```
 
 Login responses return a short-lived JWT access token and safe user fields only. They must not include passwords, password hashes, raw documents, or sensitive identity anchors.
+
+## Create Organization Request Body
+POST /api/organizations
+
+```json
+{
+  "name": "Acme Bank",
+  "email": "admin@example.com",
+  "password": "strong-password",
+  "organization_type": "bank"
+}
+```
+
+Create organization responses return safe organization account fields only. They must not include passwords, password hashes, API keys, API key hashes, raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, or truth values.
+
+## Organization Login Request Body
+POST /api/organization/auth/login
+
+```json
+{
+  "email": "admin@example.com",
+  "password": "strong-password"
+}
+```
+
+Organization login responses return a short-lived JWT access token and safe organization fields only. They must not include passwords, password hashes, API keys, API key hashes, raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, or truth values.
 
 ## Current Account
 GET /api/account/me
@@ -118,7 +147,7 @@ Truth definition responses return registry metadata only. They must not include 
 ## Organization Claim Request
 GET /api/organization/me
 
-Requires `X-Kladd-API-Key`.
+Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.
 
 Returns safe organization profile fields only:
 - id
@@ -130,13 +159,13 @@ Responses must not include API keys, API key hashes, raw documents, sensitive id
 
 GET /api/organization/audit-logs
 
-Requires `X-Kladd-API-Key`.
+Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.
 
 Returns sanitized activity history for the authenticated organization. Responses include event type, safe title, safe description, and timestamp only. They must not include raw metadata, raw documents, webhook payloads, webhook signatures, sensitive identity anchors, Security PIN values, Security PIN hashes, exchange PIN hashes, API keys, API key hashes, or truth values.
 
 POST /api/organization/claim-requests
 
-Requires `X-Kladd-API-Key`.
+Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.
 
 Local MVP API keys can be created with:
 
@@ -157,13 +186,13 @@ This creates a pending claim request for the target user. It must not issue a cl
 
 GET /api/organization/claim-requests
 
-Requires `X-Kladd-API-Key`.
+Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.
 
 Returns claim requests created by the authenticated organization. Responses include request metadata, purpose, requested proof types, status, and expiry only. They must not include raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, API key hashes, or truth values.
 
 GET /api/organization/claims
 
-Requires `X-Kladd-API-Key`.
+Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.
 
 Returns claims belonging to the authenticated organization. Active claims may show approved proof types. Expired or revoked claims must hide proof details. Responses must not include raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, API key hashes, exchange PIN hashes, or truth values.
 
@@ -203,7 +232,7 @@ The delivery command sends already-signed safe payloads to active endpoints, mar
 ## Organization Webhook Endpoint
 GET /api/organization/webhook-endpoint
 
-Requires `X-Kladd-API-Key`.
+Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.
 
 Returns the authenticated organization's configured webhook endpoint metadata only:
 - id
@@ -217,7 +246,7 @@ Responses must not include webhook signatures, payload bodies, API keys, API key
 
 POST /api/organization/webhook-endpoint
 
-Requires `X-Kladd-API-Key`.
+Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.
 
 ```json
 {
@@ -229,7 +258,7 @@ Creates or updates the authenticated organization's active webhook endpoint. The
 
 GET /api/organization/webhook-deliveries
 
-Requires `X-Kladd-API-Key`.
+Requires `Authorization: Bearer <organization_access_token>` for dashboard access. `X-Kladd-API-Key` remains supported for organization integrations.
 
 Returns safe webhook delivery history for the authenticated organization. Responses include event type, aggregate id, status, attempts, delivery timing, and retry timing only. They must not include webhook signatures, payload bodies, raw documents, sensitive identity anchors, Security PIN values, Security PIN hashes, exchange PIN hashes, API key hashes, or truth values.
 

@@ -25,6 +25,7 @@ var (
 	ErrInvalidPassword     = errors.New("organization password must be at least 8 characters")
 	ErrEmailTaken          = errors.New("organization email is already registered")
 	ErrInvalidCredentials  = errors.New("invalid organization email or password")
+	ErrInvalidToken        = errors.New("invalid organization token")
 )
 
 type Store interface {
@@ -33,6 +34,7 @@ type Store interface {
 	RegisterAccount(ctx context.Context, record RegisterRecord) (Account, error)
 	FindCredentialsByEmail(ctx context.Context, email string) (Credentials, error)
 	RecordLogin(ctx context.Context, account Account) error
+	GetOrganization(ctx context.Context, id uuid.UUID) (claimrequests.Organization, error)
 }
 
 type Service struct {
@@ -185,8 +187,21 @@ func (service Service) Login(ctx context.Context, input LoginInput) (LoginResult
 	}, nil
 }
 
-func (service Service) AuthenticateToken(tokenString string) (uuid.UUID, error) {
-	return service.tokenManager.Verify(tokenString)
+func (service Service) AuthenticateToken(ctx context.Context, tokenString string) (claimrequests.Organization, error) {
+	organizationID, err := service.tokenManager.Verify(tokenString)
+	if err != nil {
+		return claimrequests.Organization{}, ErrInvalidToken
+	}
+
+	organization, err := service.store.GetOrganization(ctx, organizationID)
+	if err != nil {
+		if errors.Is(err, ErrInvalidOrganization) {
+			return claimrequests.Organization{}, ErrInvalidToken
+		}
+		return claimrequests.Organization{}, err
+	}
+
+	return organization, nil
 }
 
 func HashAPIKey(apiKey string) string {
