@@ -1568,12 +1568,12 @@ export default function Home() {
                       For requesters
                     </p>
                     <h2 className="mt-1 text-xl font-semibold tracking-normal">
-                      Send a proof request
+                      Request a proof
                     </h2>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                      Organizations request a proof. The user reviews it and
-                      approves with their own Security PIN before Kladd releases
-                      any verification result.
+                      Ask for the proof you need. The user reviews the request
+                      and approves with their own Security PIN before anything
+                      is released.
                     </p>
                   </div>
                   {organizationProfile ? (
@@ -1589,7 +1589,10 @@ export default function Home() {
                   className="mt-5 grid gap-4 lg:grid-cols-2"
                   onSubmit={handleCreateOrganizationRequest}
                 >
-                  <div className="space-y-4">
+                  <div className="space-y-4 rounded-lg border border-emerald-100 bg-white p-4">
+                    <p className="text-sm font-semibold text-slate-950">
+                      Who needs to approve?
+                    </p>
                     <TextInput
                       label="User email"
                       type="email"
@@ -1637,54 +1640,84 @@ export default function Home() {
                     </label>
                   </div>
 
-                  <div className="space-y-4">
+                  <div className="space-y-4 rounded-lg border border-emerald-100 bg-white p-4">
                     <fieldset className="space-y-2">
                       <legend className="text-sm font-semibold text-slate-700">
-                        Proofs requested
+                        Proofs to request
                       </legend>
                       <div className="grid gap-2 sm:grid-cols-2">
-                        {proofOptions.map((proof) => (
-                          <label
-                            key={proof.key}
-                            className="flex items-center gap-2 rounded-md border border-emerald-100 bg-white px-3 py-2 text-sm font-medium text-slate-700"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={organizationRequestForm.requestedTruths.includes(
-                                proof.key,
-                              )}
-                              onChange={(event) =>
-                                setOrganizationRequestForm((form) => ({
-                                  ...form,
-                                  requestedTruths: event.target.checked
-                                    ? [...form.requestedTruths, proof.key]
-                                    : form.requestedTruths.filter(
-                                        (truth) => truth !== proof.key,
-                                      ),
-                                }))
-                              }
-                              className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-500"
-                            />
-                            <span>
-                              <span className="block">{proof.label}</span>
-                              <span className="block text-xs font-medium text-slate-500">
-                                {proof.category}
+                        {proofOptions.map((proof) => {
+                          const selected =
+                            organizationRequestForm.requestedTruths.includes(
+                              proof.key,
+                            );
+
+                          return (
+                            <label
+                              key={proof.key}
+                              className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition ${
+                                selected
+                                  ? "border-emerald-300 bg-emerald-50 text-emerald-950"
+                                  : "border-emerald-100 bg-white text-slate-700 hover:border-emerald-200 hover:bg-[#f7fbf8]"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                onChange={(event) =>
+                                  setOrganizationRequestForm((form) => ({
+                                    ...form,
+                                    requestedTruths: event.target.checked
+                                      ? [...form.requestedTruths, proof.key]
+                                      : form.requestedTruths.filter(
+                                          (truth) => truth !== proof.key,
+                                        ),
+                                  }))
+                                }
+                                className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-500"
+                              />
+                              <span>
+                                <span className="block">{proof.label}</span>
+                                <span className="block text-xs font-medium text-slate-500">
+                                  {proof.category}
+                                </span>
                               </span>
-                            </span>
-                          </label>
-                        ))}
+                            </label>
+                          );
+                        })}
                       </div>
                     </fieldset>
 
-                    <div className="rounded-lg border border-emerald-100 bg-white p-4">
+                    <div className="rounded-lg border border-emerald-100 bg-[#f7fbf8] p-4">
                       <p className="text-sm font-semibold text-slate-950">
-                        User approval required
+                        Request summary
                       </p>
-                      <p className="mt-2 text-sm leading-6 text-slate-600">
-                        Your organization can send the request and track its
-                        status, but only the user can approve or deny it.
-                      </p>
+                      <dl className="mt-3 grid gap-2 text-sm">
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">Recipient</dt>
+                          <dd className="break-all text-right font-semibold text-slate-800">
+                            {organizationRequestForm.userEmail || "Not set"}
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">Access window</dt>
+                          <dd className="font-semibold text-slate-800">
+                            {organizationRequestForm.durationDays} days
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">Proofs</dt>
+                          <dd className="font-semibold text-slate-800">
+                            {organizationRequestForm.requestedTruths.length}
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
+
+                    <p className="text-sm leading-6 text-slate-600">
+                      Sending creates a pending request only. The user must
+                      approve or deny it.
+                    </p>
 
                     <SubmitButton disabled={isSubmitting}>
                       Send request
@@ -1747,10 +1780,10 @@ export default function Home() {
                       <section className="rounded-lg border border-emerald-100 bg-white p-4">
                         <div>
                           <p className="text-sm font-semibold text-slate-950">
-                            Webhook endpoint
+                            Developer webhook
                           </p>
                           <p className="mt-1 text-sm leading-6 text-slate-600">
-                            Receive proof status updates from Kladd.
+                            Optional delivery URL for proof status updates.
                           </p>
                         </div>
 
@@ -1766,7 +1799,7 @@ export default function Home() {
                             required
                           />
                           <SubmitButton disabled={isSubmitting}>
-                            Save endpoint
+                            Save webhook
                           </SubmitButton>
                         </form>
 
@@ -2622,6 +2655,9 @@ function OrganizationRequestList({
                     {request.purpose}
                   </p>
                   <p className="mt-1 text-xs font-medium text-slate-500">
+                    Requested {formatDateTime(request.created_at)}
+                  </p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">
                     Expires {formatDateTime(request.expires_at)}
                   </p>
                 </div>
@@ -2700,6 +2736,14 @@ function OrganizationClaimList({
                   Proof details hidden
                 </p>
               )}
+              {claim.status === "active" ? (
+                <a
+                  href={`/verify/${claim.id}`}
+                  className="mt-3 inline-flex h-9 items-center rounded-md border border-emerald-200 bg-white px-3 text-xs font-semibold text-emerald-800 transition hover:border-emerald-300 hover:bg-emerald-50"
+                >
+                  Open verification
+                </a>
+              ) : null}
             </article>
           ))
         ) : (
