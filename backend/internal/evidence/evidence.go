@@ -12,12 +12,16 @@ import (
 )
 
 const (
-	StatusUploaded = "uploaded"
+	StatusUploaded            = "uploaded"
+	StatusPendingVerification = "pending_verification"
 )
 
 var (
-	ErrInvalidCategory = errors.New("evidence category is required")
-	ErrInvalidFile     = errors.New("evidence file is required")
+	ErrInvalidUser           = errors.New("user_id is required")
+	ErrInvalidCategory       = errors.New("evidence category is required")
+	ErrInvalidFile           = errors.New("evidence file is required")
+	ErrEvidenceNotFound      = errors.New("evidence item not found")
+	ErrEvidenceNotReviewable = errors.New("evidence item is not ready for review")
 )
 
 type CreateInput struct {
@@ -70,6 +74,7 @@ type Storage interface {
 type Store interface {
 	Create(ctx context.Context, record CreateRecord) (EvidenceItem, error)
 	List(ctx context.Context, userID uuid.UUID) ([]EvidenceItem, error)
+	RequestReview(ctx context.Context, userID uuid.UUID, evidenceID uuid.UUID) (EvidenceItem, error)
 }
 
 type Service struct {
@@ -95,6 +100,17 @@ func (service Service) Create(ctx context.Context, input CreateInput) (EvidenceI
 
 func (service Service) List(ctx context.Context, userID uuid.UUID) ([]EvidenceItem, error) {
 	return service.store.List(ctx, userID)
+}
+
+func (service Service) RequestReview(ctx context.Context, userID uuid.UUID, evidenceID uuid.UUID) (EvidenceItem, error) {
+	if userID == uuid.Nil {
+		return EvidenceItem{}, ErrInvalidUser
+	}
+	if evidenceID == uuid.Nil {
+		return EvidenceItem{}, ErrEvidenceNotFound
+	}
+
+	return service.store.RequestReview(ctx, userID, evidenceID)
 }
 
 func (service Service) prepareRecord(ctx context.Context, input CreateInput) (CreateRecord, error) {

@@ -674,6 +674,35 @@ export default function Home() {
     }
   }
 
+  async function handleRequestEvidenceReview(evidenceID: string) {
+    if (!token) {
+      setError("Please sign in before requesting record review.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const item = await apiRequest<EvidenceItem>(
+        `/evidence-items/${evidenceID}/request-review`,
+        {
+          method: "POST",
+          token,
+        },
+      );
+      setEvidenceItems((items) =>
+        items.map((record) => (record.id === item.id ? item : record)),
+      );
+      setActivityItems(await loadActivityItems(token));
+      setNotice("Record review requested.");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function handleCreateOrganizationRequest(
     event: FormEvent<HTMLFormElement>,
   ) {
@@ -1482,7 +1511,14 @@ export default function Home() {
                   <div className="mt-5 grid gap-3 md:grid-cols-2">
                     {evidenceItems.length > 0 ? (
                       evidenceItems.map((item) => (
-                        <EvidenceCard key={item.id} item={item} />
+                        <EvidenceCard
+                          key={item.id}
+                          item={item}
+                          isSubmitting={isSubmitting}
+                          onRequestReview={() =>
+                            handleRequestEvidenceReview(item.id)
+                          }
+                        />
                       ))
                     ) : (
                       <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500 md:col-span-2">
@@ -2183,7 +2219,17 @@ function ProfileField({ label, value }: { label: string; value: string }) {
   );
 }
 
-function EvidenceCard({ item }: { item: EvidenceItem }) {
+function EvidenceCard({
+  item,
+  isSubmitting,
+  onRequestReview,
+}: {
+  item: EvidenceItem;
+  isSubmitting: boolean;
+  onRequestReview: () => void;
+}) {
+  const canRequestReview = item.status === "uploaded";
+
   return (
     <article className="min-h-40 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
       <div className="flex items-start justify-between gap-3">
@@ -2220,6 +2266,17 @@ function EvidenceCard({ item }: { item: EvidenceItem }) {
           </dd>
         </div>
       </dl>
+
+      {canRequestReview ? (
+        <button
+          type="button"
+          onClick={onRequestReview}
+          disabled={isSubmitting}
+          className="mt-4 h-10 w-full rounded-md border border-indigo-200 bg-white px-4 text-sm font-semibold text-indigo-700 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
+        >
+          Request review
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -3047,6 +3104,9 @@ function formatProofName(value: string) {
 function formatRecordStatus(value: string) {
   if (value === "uploaded") {
     return "Added";
+  }
+  if (value === "pending_verification") {
+    return "Review requested";
   }
   if (value === "verified") {
     return "Verified";

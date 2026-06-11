@@ -12,10 +12,12 @@ import (
 )
 
 type recordingStore struct {
-	record CreateRecord
-	item   EvidenceItem
-	items  []EvidenceItem
-	err    error
+	record     CreateRecord
+	item       EvidenceItem
+	items      []EvidenceItem
+	err        error
+	userID     uuid.UUID
+	evidenceID uuid.UUID
 }
 
 func (store *recordingStore) Create(ctx context.Context, record CreateRecord) (EvidenceItem, error) {
@@ -41,6 +43,21 @@ func (store *recordingStore) List(ctx context.Context, userID uuid.UUID) ([]Evid
 		return nil, store.err
 	}
 	return store.items, nil
+}
+
+func (store *recordingStore) RequestReview(ctx context.Context, userID uuid.UUID, evidenceID uuid.UUID) (EvidenceItem, error) {
+	store.userID = userID
+	store.evidenceID = evidenceID
+	if store.err != nil {
+		return EvidenceItem{}, store.err
+	}
+	if store.item.ID != uuid.Nil {
+		return store.item, nil
+	}
+	return EvidenceItem{
+		ID:     evidenceID,
+		Status: StatusPendingVerification,
+	}, nil
 }
 
 type recordingStorage struct {
@@ -168,6 +185,42 @@ func TestServiceCreateValidatesInput(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.err)
 			}
 		})
+	}
+}
+
+func TestServiceRequestReviewUpdatesUserEvidence(t *testing.T) {
+	userID := uuid.New()
+	evidenceID := uuid.New()
+	store := &recordingStore{}
+	service := NewService(store, &recordingStorage{})
+
+	item, err := service.RequestReview(context.Background(), userID, evidenceID)
+	if err != nil {
+		t.Fatalf("request review: %v", err)
+	}
+
+	if store.userID != userID {
+		t.Fatalf("user id = %s, want %s", store.userID, userID)
+	}
+	if store.evidenceID != evidenceID {
+		t.Fatalf("evidence id = %s, want %s", store.evidenceID, evidenceID)
+	}
+	if item.Status != StatusPendingVerification {
+		t.Fatalf("status = %q, want %q", item.Status, StatusPendingVerification)
+	}
+}
+
+func TestServiceRequestReviewValidatesInput(t *testing.T) {
+	service := NewService(&recordingStore{}, &recordingStorage{})
+
+	_, err := service.RequestReview(context.Background(), uuid.Nil, uuid.New())
+	if !errors.Is(err, ErrInvalidUser) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidUser)
+	}
+
+	_, err = service.RequestReview(context.Background(), uuid.New(), uuid.Nil)
+	if !errors.Is(err, ErrEvidenceNotFound) {
+		t.Fatalf("error = %v, want %v", err, ErrEvidenceNotFound)
 	}
 }
 

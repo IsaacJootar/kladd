@@ -48,6 +48,7 @@ type Authenticator interface {
 type EvidenceManager interface {
 	Create(ctx context.Context, input evidence.CreateInput) (evidence.EvidenceItem, error)
 	List(ctx context.Context, userID uuid.UUID) ([]evidence.EvidenceItem, error)
+	RequestReview(ctx context.Context, userID uuid.UUID, evidenceID uuid.UUID) (evidence.EvidenceItem, error)
 }
 
 type AuditLogLister interface {
@@ -116,6 +117,7 @@ func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGett
 	mux.HandleFunc("/api/account/security-pin", setupSecurityPINHandler(pinSetter, authenticator))
 	mux.HandleFunc("/api/account/security-pin/reset", resetSecurityPINHandler(pinResetter, authenticator))
 	mux.HandleFunc("/api/evidence-items", evidenceItemsHandler(evidenceManager, authenticator))
+	mux.HandleFunc("/api/evidence-items/", evidenceItemByIDHandler(evidenceManager, authenticator))
 	mux.HandleFunc("/api/audit-logs", auditLogsHandler(auditLogLister, authenticator))
 	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator, organizationAuthenticator))
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
@@ -529,6 +531,44 @@ func createEvidenceItem(w http.ResponseWriter, r *http.Request, userID uuid.UUID
 	}
 
 	writeJSON(w, http.StatusCreated, item)
+}
+
+func evidenceItemByIDHandler(evidenceManager EvidenceManager, authenticator Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/evidence-items/")
+		if strings.HasSuffix(path, "/request-review") {
+			requestEvidenceReview(w, r, strings.TrimSuffix(path, "/request-review"), evidenceManager, authenticator)
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func requestEvidenceReview(w http.ResponseWriter, r *http.Request, evidenceIDValue string, evidenceManager EvidenceManager, authenticator Authenticator) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := authenticateRequest(w, r, authenticator)
+	if !ok {
+		return
+	}
+
+	evidenceID, err := uuid.Parse(evidenceIDValue)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "evidence_not_found", "Record was not found.")
+		return
+	}
+
+	item, err := evidenceManager.RequestReview(r.Context(), userID, evidenceID)
+	if err != nil {
+		writeRequestEvidenceReviewError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, item)
 }
 
 func truthDefinitionsHandler(truthDefinitionLister TruthDefinitionLister, authenticator Authenticator, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
@@ -1155,8 +1195,23 @@ func writeCreateEvidenceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_category", "Evidence category is required.")
 	case errors.Is(err, evidence.ErrInvalidFile):
 		writeError(w, http.StatusBadRequest, "invalid_file", "Evidence file is required.")
+	case errors.Is(err, evidence.ErrInvalidUser):
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error", "Unable to save evidence record.")
+	}
+}
+
+func writeRequestEvidenceReviewError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, evidence.ErrEvidenceNotFound):
+		writeError(w, http.StatusNotFound, "evidence_not_found", "Record was not found.")
+	case errors.Is(err, evidence.ErrEvidenceNotReviewable):
+		writeError(w, http.StatusConflict, "evidence_not_reviewable", "Record has already been sent for review.")
+	case errors.Is(err, evidence.ErrInvalidUser):
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
+	default:
+		writeError(w, http.StatusInternalServerError, "server_error", "Unable to request record review.")
 	}
 }
 

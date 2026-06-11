@@ -16,6 +16,7 @@
 ## Evidence Endpoints
 - GET /api/evidence-items
 - POST /api/evidence-items
+- POST /api/evidence-items/{id}/request-review
 
 ## Truth Registry Endpoints
 - GET /api/truth-definitions
@@ -129,6 +130,12 @@ Fields:
 - `file`
 
 Evidence responses return metadata only. They must not include internal `file_path`, download URLs, raw document contents, sensitive identity anchors, Security PIN values, or hashes.
+
+POST /api/evidence-items/{id}/request-review
+
+Requires `Authorization: Bearer <access_token>`.
+
+Moves a user-owned uploaded record into `pending_verification`. Responses return safe evidence metadata only and must not include internal `file_path`, download URLs, raw document contents, sensitive identity anchors, Security PIN values, or hashes.
 
 ## Truth Definitions
 GET /api/truth-definitions

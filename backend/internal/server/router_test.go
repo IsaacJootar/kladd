@@ -117,11 +117,12 @@ func (authenticator *fakeAuthenticator) Authenticate(tokenString string) (uuid.U
 }
 
 type fakeEvidenceManager struct {
-	items  []evidence.EvidenceItem
-	item   evidence.EvidenceItem
-	err    error
-	input  evidence.CreateInput
-	userID uuid.UUID
+	items      []evidence.EvidenceItem
+	item       evidence.EvidenceItem
+	err        error
+	input      evidence.CreateInput
+	userID     uuid.UUID
+	evidenceID uuid.UUID
 }
 
 func (manager *fakeEvidenceManager) Create(ctx context.Context, input evidence.CreateInput) (evidence.EvidenceItem, error) {
@@ -138,6 +139,21 @@ func (manager *fakeEvidenceManager) List(ctx context.Context, userID uuid.UUID) 
 		return nil, manager.err
 	}
 	return manager.items, nil
+}
+
+func (manager *fakeEvidenceManager) RequestReview(ctx context.Context, userID uuid.UUID, evidenceID uuid.UUID) (evidence.EvidenceItem, error) {
+	manager.userID = userID
+	manager.evidenceID = evidenceID
+	if manager.err != nil {
+		return evidence.EvidenceItem{}, manager.err
+	}
+	if manager.item.ID != uuid.Nil {
+		return manager.item, nil
+	}
+	return evidence.EvidenceItem{
+		ID:     evidenceID,
+		Status: evidence.StatusPendingVerification,
+	}, nil
 }
 
 type fakeAuditLogLister struct {
@@ -1205,6 +1221,76 @@ func TestEvidenceItemsHandlerRequiresBearerToken(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestEvidenceItemReviewHandlerRequestsReview(t *testing.T) {
+	userID := uuid.New()
+	evidenceID := uuid.New()
+	manager := &fakeEvidenceManager{
+		item: evidence.EvidenceItem{
+			ID:     evidenceID,
+			Status: evidence.StatusPendingVerification,
+		},
+	}
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: userID}, manager)
+	request := httptest.NewRequest(http.MethodPost, "/api/evidence-items/"+evidenceID.String()+"/request-review", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if manager.userID != userID {
+		t.Fatalf("user id = %s, want %s", manager.userID, userID)
+	}
+	if manager.evidenceID != evidenceID {
+		t.Fatalf("evidence id = %s, want %s", manager.evidenceID, evidenceID)
+	}
+	if strings.Contains(response.Body.String(), "file_path") {
+		t.Fatal("response exposed file path")
+	}
+}
+
+func TestEvidenceItemReviewHandlerMapsErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "not found", err: evidence.ErrEvidenceNotFound, status: http.StatusNotFound},
+		{name: "not reviewable", err: evidence.ErrEvidenceNotReviewable, status: http.StatusConflict},
+		{name: "unknown", err: errors.New("boom"), status: http.StatusInternalServerError},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()}, &fakeEvidenceManager{err: test.err})
+			request := httptest.NewRequest(http.MethodPost, "/api/evidence-items/"+uuid.New().String()+"/request-review", nil)
+			request.Header.Set("Authorization", "Bearer test-token")
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+		})
+	}
+}
+
+func TestEvidenceItemReviewHandlerRequiresPost(t *testing.T) {
+	router := newTestRouter(nil, nil, nil, &fakeAuthenticator{userID: uuid.New()})
+	request := httptest.NewRequest(http.MethodGet, "/api/evidence-items/"+uuid.New().String()+"/request-review", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
 	}
 }
 

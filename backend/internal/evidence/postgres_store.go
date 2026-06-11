@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -71,6 +72,31 @@ ORDER BY uploaded_at DESC`,
 	return items, nil
 }
 
+func (store PostgresStore) RequestReview(ctx context.Context, userID uuid.UUID, evidenceID uuid.UUID) (EvidenceItem, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return EvidenceItem{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	item, err := updateEvidenceStatus(ctx, tx, userID, evidenceID, StatusPendingVerification)
+	if err != nil {
+		return EvidenceItem{}, err
+	}
+
+	if err := insertEvidenceReviewRequestedAudit(ctx, tx, userID, item, time.Now().UTC()); err != nil {
+		return EvidenceItem{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return EvidenceItem{}, err
+	}
+
+	return item, nil
+}
+
 func insertEvidenceItem(ctx context.Context, tx *sql.Tx, record CreateRecord) (EvidenceItem, error) {
 	metadata, err := json.Marshal(record.Metadata)
 	if err != nil {
@@ -98,6 +124,44 @@ RETURNING id, category, status, metadata_json, uploaded_at`,
 	return scanEvidenceItem(row)
 }
 
+func updateEvidenceStatus(ctx context.Context, tx *sql.Tx, userID uuid.UUID, evidenceID uuid.UUID, status string) (EvidenceItem, error) {
+	item, err := scanEvidenceItem(tx.QueryRowContext(ctx, `
+UPDATE evidence_items
+SET status = $3
+WHERE user_id = $1
+    AND id = $2
+    AND status = $4
+RETURNING id, category, status, metadata_json, uploaded_at`,
+		userID,
+		evidenceID,
+		status,
+		StatusUploaded,
+	))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			var exists bool
+			checkErr := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM evidence_items WHERE user_id = $1 AND id = $2
+)`,
+				userID,
+				evidenceID,
+			).Scan(&exists)
+			if checkErr != nil {
+				return EvidenceItem{}, checkErr
+			}
+			if !exists {
+				return EvidenceItem{}, ErrEvidenceNotFound
+			}
+
+			return EvidenceItem{}, ErrEvidenceNotReviewable
+		}
+		return EvidenceItem{}, err
+	}
+
+	return item, nil
+}
+
 func insertEvidenceCreatedAudit(ctx context.Context, tx *sql.Tx, userID uuid.UUID, item EvidenceItem) error {
 	metadata, err := json.Marshal(map[string]string{
 		"evidence_id": item.ID.String(),
@@ -123,6 +187,37 @@ INSERT INTO audit_logs (
 	)
 	if err != nil {
 		return fmt.Errorf("insert evidence created audit: %w", err)
+	}
+
+	return nil
+}
+
+func insertEvidenceReviewRequestedAudit(ctx context.Context, tx *sql.Tx, userID uuid.UUID, item EvidenceItem, requestedAt time.Time) error {
+	metadata, err := json.Marshal(map[string]string{
+		"evidence_id":  item.ID.String(),
+		"category":     item.Category,
+		"requested_at": requestedAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO audit_logs (
+    id,
+    actor_type,
+    actor_id,
+    event_type,
+    metadata_json
+) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+		uuid.New(),
+		"user",
+		userID,
+		"evidence.review_requested",
+		string(metadata),
+	)
+	if err != nil {
+		return fmt.Errorf("insert evidence review requested audit: %w", err)
 	}
 
 	return nil
