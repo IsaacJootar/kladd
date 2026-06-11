@@ -142,6 +142,22 @@ type ActivityListResponse = {
   items: ActivityItem[];
 };
 
+type TruthDefinition = {
+  id: string;
+  truth_key: string;
+  category: string;
+  return_type: string;
+  sensitivity: string;
+  validity_days: number;
+  derivation_rule: string;
+  required_evidence: string[];
+  created_at: string;
+};
+
+type TruthDefinitionListResponse = {
+  items: TruthDefinition[];
+};
+
 type ProofPreview = {
   title: string;
   description: string;
@@ -174,15 +190,6 @@ const navItems = [
   { label: "Requests", targetID: "proof-requests", requiresAuth: true },
   { label: "Proofs", targetID: "active-proofs", requiresAuth: true },
   { label: "Security", targetID: "security", requiresAuth: false },
-];
-
-const proofOptions = [
-  { key: "identity_verified", label: "Identity proof" },
-  { key: "address_verified", label: "Address proof" },
-  { key: "degree_verified", label: "Education proof" },
-  { key: "business_registered", label: "Business proof" },
-  { key: "license_active", label: "License proof" },
-  { key: "age_over_18", label: "Age check" },
 ];
 
 const proofPreviews: ProofPreview[] = [
@@ -276,6 +283,9 @@ export default function Home() {
   const [claimRequests, setClaimRequests] = useState<ClaimRequest[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
   const [activityItems, setActivityItems] = useState<ActivityItem[]>([]);
+  const [truthDefinitions, setTruthDefinitions] = useState<TruthDefinition[]>(
+    [],
+  );
   const [approvalPINs, setApprovalPINs] = useState<Record<string, string>>({});
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [organizationRequestForm, setOrganizationRequestForm] = useState(
@@ -345,6 +355,25 @@ export default function Home() {
     () => organizationClaims.filter((claim) => claim.status !== "active"),
     [organizationClaims],
   );
+  const proofOptions = useMemo(() => {
+    const definitions =
+      truthDefinitions.length > 0
+        ? truthDefinitions
+        : [
+            { truth_key: "identity_verified", category: "identity" },
+            { truth_key: "address_verified", category: "address" },
+            { truth_key: "degree_verified", category: "education" },
+            { truth_key: "business_registered", category: "business" },
+            { truth_key: "license_active", category: "licensing" },
+            { truth_key: "age_over_18", category: "age" },
+          ];
+
+    return definitions.map((definition) => ({
+      key: definition.truth_key,
+      label: formatProofName(definition.truth_key),
+      category: formatCategory(definition.category),
+    }));
+  }, [truthDefinitions]);
 
   const statusCards = useMemo(
     () => [
@@ -382,14 +411,16 @@ export default function Home() {
       loadClaimRequests(token),
       loadClaims(token),
       loadActivityItems(token),
+      loadTruthDefinitions(token),
     ])
-      .then(([user, evidence, requests, loadedClaims, activity]) => {
+      .then(([user, evidence, requests, loadedClaims, activity, definitions]) => {
         if (!ignore) {
           setCurrentUser(user);
           setEvidenceItems(evidence);
           setClaimRequests(requests);
           setClaims(loadedClaims);
           setActivityItems(activity);
+          setTruthDefinitions(definitions);
         }
       })
       .catch(() => {
@@ -402,6 +433,7 @@ export default function Home() {
           setClaimRequests([]);
           setClaims([]);
           setActivityItems([]);
+          setTruthDefinitions([]);
           setApprovalPINs({});
         }
       });
@@ -410,6 +442,18 @@ export default function Home() {
       ignore = true;
     };
   }, [token]);
+
+  useEffect(() => {
+    const selected = organizationRequestForm.requestedTruths;
+    if (proofOptions.length === 0 || selected.length > 0) {
+      return;
+    }
+
+    setOrganizationRequestForm((form) => ({
+      ...form,
+      requestedTruths: [proofOptions[0].key],
+    }));
+  }, [organizationRequestForm.requestedTruths, proofOptions]);
 
   useEffect(() => {
     if (!organizationToken) {
@@ -750,6 +794,7 @@ export default function Home() {
       webhookEndpoint,
       webhookDeliveriesResponse,
       activityResponse,
+      definitions,
     ] = await Promise.all([
       apiRequest<Organization>("/organization/me", {
         method: "GET",
@@ -766,6 +811,7 @@ export default function Home() {
       loadOrganizationWebhookEndpoint(accessToken),
       loadOrganizationWebhookDeliveries(accessToken),
       loadOrganizationActivityItems(accessToken),
+      loadTruthDefinitions(accessToken),
     ]);
 
     setOrganizationProfile(profile);
@@ -775,6 +821,7 @@ export default function Home() {
     setOrganizationWebhookURL(webhookEndpoint?.url ?? "");
     setOrganizationWebhookDeliveries(webhookDeliveriesResponse.items);
     setOrganizationActivityItems(activityResponse.items);
+    setTruthDefinitions(definitions);
   }
 
   async function handleConfigureOrganizationWebhookEndpoint(
@@ -1579,7 +1626,12 @@ export default function Home() {
                               }
                               className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-500"
                             />
-                            {proof.label}
+                            <span>
+                              <span className="block">{proof.label}</span>
+                              <span className="block text-xs font-medium text-slate-500">
+                                {proof.category}
+                              </span>
+                            </span>
                           </label>
                         ))}
                       </div>
@@ -2871,6 +2923,18 @@ async function loadClaims(accessToken: string) {
     method: "GET",
     token: accessToken,
   });
+
+  return response.items;
+}
+
+async function loadTruthDefinitions(accessToken: string) {
+  const response = await apiRequest<TruthDefinitionListResponse>(
+    "/truth-definitions",
+    {
+      method: "GET",
+      token: accessToken,
+    },
+  );
 
   return response.items;
 }

@@ -117,7 +117,7 @@ func buildRouter(cfg config.Config, userCreator UserCreator, userGetter UserGett
 	mux.HandleFunc("/api/account/security-pin/reset", resetSecurityPINHandler(pinResetter, authenticator))
 	mux.HandleFunc("/api/evidence-items", evidenceItemsHandler(evidenceManager, authenticator))
 	mux.HandleFunc("/api/audit-logs", auditLogsHandler(auditLogLister, authenticator))
-	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator))
+	mux.HandleFunc("/api/truth-definitions", truthDefinitionsHandler(truthDefinitionLister, authenticator, organizationAuthenticator))
 	mux.HandleFunc("/api/claim-requests", claimRequestsHandler(claimRequestManager, authenticator))
 	mux.HandleFunc("/api/claim-requests/", claimRequestByIDHandler(claimRequestManager, authenticator))
 	if organizationAuthenticator != nil {
@@ -531,14 +531,14 @@ func createEvidenceItem(w http.ResponseWriter, r *http.Request, userID uuid.UUID
 	writeJSON(w, http.StatusCreated, item)
 }
 
-func truthDefinitionsHandler(truthDefinitionLister TruthDefinitionLister, authenticator Authenticator) http.HandlerFunc {
+func truthDefinitionsHandler(truthDefinitionLister TruthDefinitionLister, authenticator Authenticator, organizationAuthenticator OrganizationAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
-		if _, ok := authenticateRequest(w, r, authenticator); !ok {
+		if !authenticateTruthRegistryRequest(w, r, authenticator, organizationAuthenticator) {
 			return
 		}
 
@@ -552,6 +552,33 @@ func truthDefinitionsHandler(truthDefinitionLister TruthDefinitionLister, authen
 			"items": definitions,
 		})
 	}
+}
+
+func authenticateTruthRegistryRequest(w http.ResponseWriter, r *http.Request, authenticator Authenticator, organizationAuthenticator OrganizationAuthenticator) bool {
+	tokenString, hasBearer := bearerToken(r.Header.Get("Authorization"))
+	if hasBearer {
+		if _, err := authenticator.Authenticate(tokenString); err == nil {
+			return true
+		}
+		if organizationAuthenticator != nil {
+			if _, err := organizationAuthenticator.AuthenticateToken(r.Context(), tokenString); err == nil {
+				return true
+			}
+		}
+
+		writeError(w, http.StatusUnauthorized, "invalid_token", "Bearer access token is invalid or expired.")
+		return false
+	}
+
+	if organizationAuthenticator != nil && strings.TrimSpace(r.Header.Get("X-Kladd-API-Key")) != "" {
+		if _, ok := authenticateOrganizationRequest(w, r, organizationAuthenticator); ok {
+			return true
+		}
+		return false
+	}
+
+	writeError(w, http.StatusUnauthorized, "unauthorized", "Bearer access token is required.")
+	return false
 }
 
 func claimRequestsHandler(claimRequestManager ClaimRequestManager, authenticator Authenticator) http.HandlerFunc {

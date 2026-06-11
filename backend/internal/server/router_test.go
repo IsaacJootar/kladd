@@ -1405,6 +1405,50 @@ func TestTruthDefinitionsHandlerListsDefinitionMetadata(t *testing.T) {
 	}
 }
 
+func TestTruthDefinitionsHandlerAllowsOrganizationToken(t *testing.T) {
+	lister := &fakeTruthDefinitionLister{
+		definitions: []truths.Definition{
+			{
+				ID:               uuid.New(),
+				TruthKey:         "identity_verified",
+				Category:         "identity",
+				ReturnType:       "boolean",
+				Sensitivity:      "high",
+				ValidityDays:     365,
+				DerivationRule:   "verified_government_identity_evidence",
+				RequiredEvidence: []string{"passport"},
+				CreatedAt:        time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	router := NewRouterWithOrganizationAPI(
+		config.Config{},
+		&fakeUserCreator{},
+		&fakeUserGetter{},
+		&fakeSecurityPINSetter{},
+		&fakeSecurityPINResetter{},
+		&fakeAuthenticator{authErr: auth.ErrInvalidCredentials},
+		&fakeEvidenceManager{},
+		&fakeAuditLogLister{},
+		lister,
+		&fakeClaimRequestManager{},
+		&fakeClaimManager{},
+		&fakeOrganizationAuthenticator{organization: claimrequests.Organization{ID: uuid.New(), Name: "Acme Bank"}},
+	)
+	request := httptest.NewRequest(http.MethodGet, "/api/truth-definitions", nil)
+	request.Header.Set("Authorization", "Bearer organization-token")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if !lister.called {
+		t.Fatal("expected truth definitions lister to be called")
+	}
+}
+
 func TestTruthDefinitionsHandlerRequiresBearerToken(t *testing.T) {
 	router := NewRouter(
 		config.Config{},

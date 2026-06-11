@@ -137,6 +137,8 @@ Requires `Authorization: Bearer <access_token>`.
 
 Truth definition responses return registry metadata only. They must not include derived truth values, raw documents, unrestricted evidence, sensitive identity anchors, Security PIN values, or hashes.
 
+Organization dashboards may also read Truth Registry metadata with `Authorization: Bearer <organization_access_token>` so request forms can use supported proof keys only.
+
 ## Approve Request Body
 ```json
 {
