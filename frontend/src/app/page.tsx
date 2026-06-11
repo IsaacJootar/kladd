@@ -158,13 +158,6 @@ type TruthDefinitionListResponse = {
   items: TruthDefinition[];
 };
 
-type ProofPreview = {
-  title: string;
-  description: string;
-  recordHint: string;
-  accent: "indigo" | "emerald" | "amber";
-};
-
 type OrganizationRequestForm = {
   userEmail: string;
   purpose: string;
@@ -184,39 +177,20 @@ type OrganizationLoginForm = {
   password: string;
 };
 
+type ProofReadiness = {
+  key: string;
+  label: string;
+  category: string;
+  requiredEvidence: string[];
+  status: "ready" | "review" | "missing";
+};
+
 const navItems = [
   { label: "Home", targetID: "workspace-home", requiresAuth: false },
   { label: "My Records", targetID: "my-records", requiresAuth: true },
   { label: "Requests", targetID: "proof-requests", requiresAuth: true },
   { label: "Proofs", targetID: "active-proofs", requiresAuth: true },
   { label: "Security", targetID: "security", requiresAuth: false },
-];
-
-const proofPreviews: ProofPreview[] = [
-  {
-    title: "Identity proof",
-    description: "Confirm who you are without sharing your full ID document.",
-    recordHint: "Passport or government ID",
-    accent: "indigo",
-  },
-  {
-    title: "Address proof",
-    description: "Confirm your current address when a requester needs it.",
-    recordHint: "Utility bill",
-    accent: "emerald",
-  },
-  {
-    title: "Education proof",
-    description: "Prepare degree or certificate confirmation for approvals.",
-    recordHint: "Degree certificate",
-    accent: "amber",
-  },
-  {
-    title: "Business proof",
-    description: "Confirm business registration details with your approval.",
-    recordHint: "Business registration",
-    accent: "indigo",
-  },
 ];
 
 const emptyRegisterForm = {
@@ -374,6 +348,36 @@ export default function Home() {
       category: formatCategory(definition.category),
     }));
   }, [truthDefinitions]);
+  const proofReadiness = useMemo<ProofReadiness[]>(
+    () =>
+      truthDefinitions.map((definition) => {
+        const requiredEvidence = definition.required_evidence;
+        const requiredRecords = requiredEvidence.map((category) =>
+          evidenceItems.filter((item) => item.category === category),
+        );
+        const allVerified =
+          requiredEvidence.length > 0 &&
+          requiredRecords.every((records) =>
+            records.some((record) => record.status === "verified"),
+          );
+        const allPresent =
+          requiredEvidence.length > 0 &&
+          requiredRecords.every((records) => records.length > 0);
+
+        return {
+          key: definition.truth_key,
+          label: formatProofName(definition.truth_key),
+          category: formatCategory(definition.category),
+          requiredEvidence,
+          status: allVerified ? "ready" : allPresent ? "review" : "missing",
+        };
+      }),
+    [evidenceItems, truthDefinitions],
+  );
+  const readyProofCount = useMemo(
+    () => proofReadiness.filter((proof) => proof.status === "ready").length,
+    [proofReadiness],
+  );
 
   const statusCards = useMemo(
     () => [
@@ -442,18 +446,6 @@ export default function Home() {
       ignore = true;
     };
   }, [token]);
-
-  useEffect(() => {
-    const selected = organizationRequestForm.requestedTruths;
-    if (proofOptions.length === 0 || selected.length > 0) {
-      return;
-    }
-
-    setOrganizationRequestForm((form) => ({
-      ...form,
-      requestedTruths: [proofOptions[0].key],
-    }));
-  }, [organizationRequestForm.requestedTruths, proofOptions]);
 
   useEffect(() => {
     if (!organizationToken) {
@@ -710,6 +702,10 @@ export default function Home() {
 
     const userEmail = organizationRequestForm.userEmail.trim();
     const purpose = organizationRequestForm.purpose.trim();
+    const supportedProofKeys = new Set(proofOptions.map((proof) => proof.key));
+    const requestedTruths = organizationRequestForm.requestedTruths.filter(
+      (truth) => supportedProofKeys.has(truth),
+    );
 
     if (!organizationToken) {
       setError("Sign in to your organization before sending a request.");
@@ -726,7 +722,7 @@ export default function Home() {
       return;
     }
 
-    if (organizationRequestForm.requestedTruths.length === 0) {
+    if (requestedTruths.length === 0) {
       setError("Choose at least one proof for the request.");
       return;
     }
@@ -743,7 +739,7 @@ export default function Home() {
           body: JSON.stringify({
             user_email: userEmail,
             purpose,
-            requested_truths: organizationRequestForm.requestedTruths,
+            requested_truths: requestedTruths,
             duration_days: Number(organizationRequestForm.durationDays),
           }),
         },
@@ -1536,22 +1532,29 @@ export default function Home() {
                         Proofs
                       </p>
                       <h2 className="mt-1 text-xl font-semibold tracking-normal">
-                        Proofs Kladd can prepare
+                        Proof readiness
                       </h2>
                       <p className="mt-2 text-sm leading-6 text-slate-600">
-                        These are the kinds of confirmations you will be able to
-                        approve when your matching records are verified.
+                        See which proofs already have matching records and which
+                        ones still need a record before they can be approved.
                       </p>
                     </div>
                     <span className="w-fit rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
-                      User controlled
+                      {readyProofCount} ready
                     </span>
                   </div>
 
                   <div className="mt-5 grid gap-3 md:grid-cols-2">
-                    {proofPreviews.map((proof) => (
-                      <ProofPreviewCard key={proof.title} proof={proof} />
-                    ))}
+                    {proofReadiness.length > 0 ? (
+                      proofReadiness.map((proof) => (
+                        <ProofReadinessCard key={proof.key} proof={proof} />
+                      ))
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-[#f9fbfd] p-5 text-sm font-medium text-slate-500 md:col-span-2">
+                        Proof readiness will appear after the Truth Registry
+                        loads.
+                      </div>
+                    )}
                   </div>
                 </section>
               </>
@@ -2554,16 +2557,24 @@ function ActivityCard({ item }: { item: ActivityItem }) {
   );
 }
 
-function ProofPreviewCard({ proof }: { proof: ProofPreview }) {
+function ProofReadinessCard({ proof }: { proof: ProofReadiness }) {
   return (
     <article className="min-h-40 rounded-lg border border-slate-200 bg-[#f9fbfd] p-4">
-      <div className={`mb-4 h-1.5 w-16 rounded-full ${proofAccentClass(proof.accent)}`} />
-      <p className="text-sm font-semibold text-slate-950">{proof.title}</p>
+      <div className={`mb-4 h-1.5 w-16 rounded-full ${readinessAccentClass(proof.status)}`} />
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-950">{proof.label}</p>
+          <p className="mt-1 text-sm text-slate-500">{proof.category}</p>
+        </div>
+        <span className={proofReadinessStatusClass(proof.status)}>
+          {formatProofReadiness(proof.status)}
+        </span>
+      </div>
       <p className="mt-2 text-sm leading-6 text-slate-600">
-        {proof.description}
+        {proofReadinessDescription(proof.status)}
       </p>
       <p className="mt-4 rounded-md bg-white px-3 py-2 text-sm font-medium text-slate-700">
-        Starts with: {proof.recordHint}
+        Needs: {proof.requiredEvidence.map(formatCategory).join(", ")}
       </p>
     </article>
   );
@@ -3152,6 +3163,28 @@ function formatClaimStatus(value: string) {
   return formatCategory(value);
 }
 
+function formatProofReadiness(value: ProofReadiness["status"]) {
+  if (value === "ready") {
+    return "Ready";
+  }
+  if (value === "review") {
+    return "Review needed";
+  }
+
+  return "Record needed";
+}
+
+function proofReadinessDescription(value: ProofReadiness["status"]) {
+  if (value === "ready") {
+    return "Matching records are verified, so this proof can be released after approval.";
+  }
+  if (value === "review") {
+    return "Matching records are saved, but they still need verification before this proof is ready.";
+  }
+
+  return "Add the required record so Kladd can prepare this proof.";
+}
+
 function formatWebhookEvent(value: string) {
   if (value === "claim.approved") {
     return "Proof approved";
@@ -3207,11 +3240,23 @@ function deliveryStatusClass(value: string) {
   return `${base} bg-amber-50 text-amber-800`;
 }
 
-function proofAccentClass(accent: ProofPreview["accent"]) {
-  if (accent === "emerald") {
+function proofReadinessStatusClass(value: ProofReadiness["status"]) {
+  const base = "w-fit rounded-md px-2.5 py-1 text-xs font-semibold";
+  if (value === "ready") {
+    return `${base} bg-emerald-50 text-emerald-800`;
+  }
+  if (value === "review") {
+    return `${base} bg-amber-50 text-amber-800`;
+  }
+
+  return `${base} bg-slate-100 text-slate-700`;
+}
+
+function readinessAccentClass(value: ProofReadiness["status"]) {
+  if (value === "ready") {
     return "bg-emerald-500";
   }
-  if (accent === "amber") {
+  if (value === "review") {
     return "bg-amber-500";
   }
 
