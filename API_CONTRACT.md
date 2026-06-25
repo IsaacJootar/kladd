@@ -137,6 +137,14 @@ Requires `Authorization: Bearer <access_token>`.
 
 Moves a user-owned uploaded record into `pending_verification`. Responses return safe evidence metadata only and must not include internal `file_path`, download URLs, raw document contents, sensitive identity anchors, Security PIN values, or hashes.
 
+Local MVP evidence review can be performed from the backend directory:
+
+```powershell
+go run ./cmd/reviewevidence -user-email "zenith@gmail.com" -evidence-id "<evidence-id>" -status verified
+```
+
+Allowed statuses are `verified` and `rejected`. This is a local admin/developer command, not a public user endpoint.
+
 ## Truth Definitions
 GET /api/truth-definitions
 

@@ -79,6 +79,16 @@ Security PINs must be 4-6 digits. Requests require `Authorization: Bearer <acces
 
 Files are stored with local storage for the MVP. API responses do not include internal file paths, download URLs, raw document contents, sensitive identity anchors, Security PIN values, or hashes.
 
+## Local Evidence Review
+
+Mark a user-owned evidence item as verified or rejected from the backend directory:
+
+```powershell
+go run ./cmd/reviewevidence -user-email "zenith@gmail.com" -evidence-id "<evidence-id>" -status verified
+```
+
+Allowed statuses are `verified` and `rejected`. The command returns safe metadata only, records an admin audit event, and does not expose raw files or internal file paths.
+
 ## Truth Definitions
 
 `GET /api/truth-definitions` returns supported truth registry metadata for authenticated users.
