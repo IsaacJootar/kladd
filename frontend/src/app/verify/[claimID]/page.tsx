@@ -76,9 +76,24 @@ export default async function VerifyPage({ params }: VerifyPageProps) {
             </span>
           </div>
 
+          <div className={statusSummaryClass(claim.status)}>
+            <p className="text-sm font-semibold text-slate-950">
+              {statusSummaryTitle(claim.status)}
+            </p>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              {statusSummaryText(claim)}
+            </p>
+          </div>
+
           <dl className="mt-5 grid gap-3 sm:grid-cols-2">
-            <VerificationField label="Issued" value={formatDateTime(claim.issued_at)} />
-            <VerificationField label="Expires" value={formatDateTime(claim.expires_at)} />
+            <VerificationField
+              label="Issued"
+              value={formatDateTime(claim.issued_at)}
+            />
+            <VerificationField
+              label="Expires"
+              value={formatDateTime(claim.expires_at)}
+            />
             <VerificationField
               label="Requester type"
               value={formatCategory(claim.organization.organization_type)}
@@ -87,24 +102,39 @@ export default async function VerifyPage({ params }: VerifyPageProps) {
               label="Requester status"
               value={formatCategory(claim.organization.verification_status)}
             />
+            {claim.revoked_at ? (
+              <VerificationField
+                label="Revoked"
+                value={formatDateTime(claim.revoked_at)}
+              />
+            ) : null}
           </dl>
 
           <section className="mt-5 border-t border-slate-200 pt-5">
-            <p className="text-sm font-semibold text-slate-500">Proofs</p>
+            <p className="text-sm font-semibold text-slate-500">
+              Verified proofs
+            </p>
             {claim.details_visible ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {(claim.approved_truths ?? []).map((truth) => (
-                  <span
-                    key={truth}
-                    className="rounded-md border border-slate-200 bg-[#f9fbfd] px-3 py-2 text-sm font-semibold text-slate-800"
-                  >
-                    {formatProofName(truth)}
-                  </span>
-                ))}
-              </div>
+              (claim.approved_truths ?? []).length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(claim.approved_truths ?? []).map((truth) => (
+                    <span
+                      key={truth}
+                      className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900"
+                    >
+                      {formatProofName(truth)}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 rounded-md bg-[#f9fbfd] px-3 py-2 text-sm font-medium text-slate-600">
+                  No proof details are available for this verification.
+                </p>
+              )
             ) : (
-              <p className="mt-3 rounded-md bg-[#f9fbfd] px-3 py-2 text-sm font-medium text-slate-600">
-                Proof details are hidden because this claim is {formatClaimStatus(claim.status).toLowerCase()}.
+              <p className="mt-3 rounded-md border border-slate-200 bg-[#f9fbfd] px-3 py-2 text-sm font-medium text-slate-600">
+                Proof details are hidden because this claim is{" "}
+                {formatClaimStatus(claim.status).toLowerCase()}.
               </p>
             )}
           </section>
@@ -186,6 +216,34 @@ function formatClaimStatus(value: string) {
   return formatCategory(value);
 }
 
+function statusSummaryTitle(value: string) {
+  if (value === "active") {
+    return "This proof is active";
+  }
+  if (value === "revoked") {
+    return "This proof was revoked";
+  }
+  if (value === "expired") {
+    return "This proof has expired";
+  }
+
+  return "Proof status available";
+}
+
+function statusSummaryText(claim: VerificationClaim) {
+  if (claim.status === "active") {
+    return "The approved proof details below are currently visible until the expiry time shown.";
+  }
+  if (claim.status === "revoked") {
+    return "The proof owner revoked access. Kladd keeps the verification metadata, but proof details are no longer visible.";
+  }
+  if (claim.status === "expired") {
+    return "This proof passed its expiry time. Kladd keeps the verification metadata, but proof details are no longer visible.";
+  }
+
+  return "Kladd is showing the current safe status for this proof link.";
+}
+
 function statusClass(value: string) {
   const base = "w-fit rounded-md px-3 py-2 text-sm font-semibold";
   if (value === "active") {
@@ -196,4 +254,16 @@ function statusClass(value: string) {
   }
 
   return `${base} bg-slate-100 text-slate-700`;
+}
+
+function statusSummaryClass(value: string) {
+  const base = "mt-5 rounded-lg border p-4";
+  if (value === "active") {
+    return `${base} border-emerald-100 bg-emerald-50`;
+  }
+  if (value === "revoked") {
+    return `${base} border-red-100 bg-red-50`;
+  }
+
+  return `${base} border-slate-200 bg-[#f9fbfd]`;
 }
