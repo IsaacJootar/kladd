@@ -260,7 +260,10 @@ export default function Home() {
   const [truthDefinitions, setTruthDefinitions] = useState<TruthDefinition[]>(
     [],
   );
-  const [approvalPINs, setApprovalPINs] = useState<Record<string, string>>({});
+  const [approvalRequest, setApprovalRequest] = useState<ClaimRequest | null>(
+    null,
+  );
+  const [approvalPIN, setApprovalPIN] = useState("");
   const [evidenceForm, setEvidenceForm] = useState(emptyEvidenceForm);
   const [organizationRequestForm, setOrganizationRequestForm] = useState(
     emptyOrganizationRequestForm,
@@ -438,7 +441,8 @@ export default function Home() {
           setClaims([]);
           setActivityItems([]);
           setTruthDefinitions([]);
-          setApprovalPINs({});
+          setApprovalRequest(null);
+          setApprovalPIN("");
         }
       });
 
@@ -894,35 +898,38 @@ export default function Home() {
 
   async function handleApproveClaimRequest(
     event: FormEvent<HTMLFormElement>,
-    requestID: string,
   ) {
     event.preventDefault();
     if (!token) {
       setError("Please sign in before approving a request.");
       return;
     }
+    if (!approvalRequest) {
+      setError("Choose a request to approve first.");
+      return;
+    }
 
-    const securityPIN = approvalPINs[requestID] ?? "";
     setIsSubmitting(true);
     clearMessages();
 
     try {
       const result = await apiRequest<ApprovalResponse>(
-        `/claim-requests/${requestID}/approve`,
+        `/claim-requests/${approvalRequest.id}/approve`,
         {
           method: "POST",
           token,
-          body: JSON.stringify({ security_pin: securityPIN }),
+          body: JSON.stringify({ security_pin: approvalPIN }),
         },
       );
       setClaimRequests((requests) =>
         requests.map((request) =>
-          request.id === requestID ? result.claim_request : request,
+          request.id === approvalRequest.id ? result.claim_request : request,
         ),
       );
       setClaims(await loadClaims(token));
       setActivityItems(await loadActivityItems(token));
-      setApprovalPINs((pins) => ({ ...pins, [requestID]: "" }));
+      setApprovalRequest(null);
+      setApprovalPIN("");
       setNotice("Request approved. A time-bound proof is now active.");
     } catch (err) {
       setError(readError(err));
@@ -954,7 +961,10 @@ export default function Home() {
         ),
       );
       setActivityItems(await loadActivityItems(token));
-      setApprovalPINs((pins) => ({ ...pins, [requestID]: "" }));
+      if (approvalRequest?.id === requestID) {
+        setApprovalRequest(null);
+        setApprovalPIN("");
+      }
       setNotice("Request denied. No proof was released.");
     } catch (err) {
       setError(readError(err));
@@ -1109,7 +1119,8 @@ export default function Home() {
     setClaimRequests([]);
     setClaims([]);
     setActivityItems([]);
-    setApprovalPINs({});
+    setApprovalRequest(null);
+    setApprovalPIN("");
     setClaimQRCodes({});
     setClaimExchangePINs({});
     setCopiedClaimID("");
@@ -1428,17 +1439,12 @@ export default function Home() {
                         <ClaimRequestCard
                           key={request.id}
                           request={request}
-                          approvalPIN={approvalPINs[request.id] ?? ""}
                           isSubmitting={isSubmitting}
-                          onPINChange={(value) =>
-                            setApprovalPINs((pins) => ({
-                              ...pins,
-                              [request.id]: value,
-                            }))
-                          }
-                          onApprove={(event) =>
-                            handleApproveClaimRequest(event, request.id)
-                          }
+                          onApprove={() => {
+                            setApprovalRequest(request);
+                            setApprovalPIN("");
+                            clearMessages();
+                          }}
                           onDeny={() => handleDenyClaimRequest(request.id)}
                         />
                       ))
@@ -2243,7 +2249,89 @@ export default function Home() {
           </aside>
         </section>
       </div>
+      {approvalRequest ? (
+        <ApprovalPINModal
+          request={approvalRequest}
+          securityPIN={approvalPIN}
+          isSubmitting={isSubmitting}
+          onPINChange={setApprovalPIN}
+          onCancel={() => {
+            setApprovalRequest(null);
+            setApprovalPIN("");
+            setError("");
+          }}
+          onApprove={handleApproveClaimRequest}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function ApprovalPINModal({
+  request,
+  securityPIN,
+  isSubmitting,
+  onPINChange,
+  onCancel,
+  onApprove,
+}: {
+  request: ClaimRequest;
+  securityPIN: string;
+  isSubmitting: boolean;
+  onPINChange: (value: string) => void;
+  onCancel: () => void;
+  onApprove: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4 py-6">
+      <section className="w-full max-w-md rounded-lg bg-white p-5 shadow-2xl">
+        <p className="text-sm font-semibold text-indigo-700">
+          Security PIN approval
+        </p>
+        <h2 className="mt-2 text-xl font-semibold tracking-normal text-slate-950">
+          Approve proof release
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          {request.organization.name} will receive only the approved proof
+          result for {request.purpose}.
+        </p>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {request.requested_truths.map((truth) => (
+            <span
+              key={truth}
+              className="rounded-md border border-slate-200 bg-[#f9fbfd] px-2.5 py-1 text-xs font-semibold text-slate-700"
+            >
+              {formatProofName(truth)}
+            </span>
+          ))}
+        </div>
+
+        <form className="mt-5 space-y-4" onSubmit={onApprove}>
+          <TextInput
+            label="Security PIN"
+            type="password"
+            inputMode="numeric"
+            value={securityPIN}
+            onChange={onPINChange}
+            minLength={4}
+            maxLength={6}
+            required
+          />
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={isSubmitting}
+              className="h-11 w-full rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
+            >
+              Cancel
+            </button>
+            <SubmitButton disabled={isSubmitting}>Approve</SubmitButton>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -2322,17 +2410,13 @@ function EvidenceCard({
 
 function ClaimRequestCard({
   request,
-  approvalPIN,
   isSubmitting,
-  onPINChange,
   onApprove,
   onDeny,
 }: {
   request: ClaimRequest;
-  approvalPIN: string;
   isSubmitting: boolean;
-  onPINChange: (value: string) => void;
-  onApprove: (event: FormEvent<HTMLFormElement>) => void;
+  onApprove: () => void;
   onDeny: () => void;
 }) {
   const canApprove = request.status === "pending_approval";
@@ -2378,32 +2462,24 @@ function ClaimRequestCard({
       </dl>
 
       {canApprove ? (
-        <form
-          className="mt-4 grid gap-3 border-t border-slate-200 pt-4 sm:grid-cols-[minmax(0,1fr)_220px]"
-          onSubmit={onApprove}
-        >
-          <TextInput
-            label="Security PIN"
-            type="password"
-            inputMode="numeric"
-            value={approvalPIN}
-            onChange={onPINChange}
-            minLength={4}
-            maxLength={6}
-            required
-          />
-          <div className="grid gap-2 sm:grid-cols-2 sm:items-end">
-            <SubmitButton disabled={isSubmitting}>Approve</SubmitButton>
-            <button
-              type="button"
-              onClick={onDeny}
-              disabled={isSubmitting}
-              className="h-11 w-full rounded-md border border-red-200 bg-white px-4 text-sm font-semibold text-red-700 shadow-sm transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
-            >
-              Deny
-            </button>
-          </div>
-        </form>
+        <div className="mt-4 grid gap-2 border-t border-slate-200 pt-4 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={onApprove}
+            disabled={isSubmitting}
+            className="h-11 w-full rounded-md bg-indigo-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            onClick={onDeny}
+            disabled={isSubmitting}
+            className="h-11 w-full rounded-md border border-red-200 bg-white px-4 text-sm font-semibold text-red-700 shadow-sm transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500"
+          >
+            Deny
+          </button>
+        </div>
       ) : null}
     </article>
   );
