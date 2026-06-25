@@ -190,7 +190,7 @@ const navItems = [
   { label: "My Records", targetID: "my-records", requiresAuth: true },
   { label: "Requests", targetID: "proof-requests", requiresAuth: true },
   { label: "Proofs", targetID: "active-proofs", requiresAuth: true },
-  { label: "Security", targetID: "security", requiresAuth: false },
+  { label: "Security", targetID: "security", requiresAuth: true },
 ];
 
 const emptyRegisterForm = {
@@ -1451,7 +1451,7 @@ export default function Home() {
                 </section>
 
                 <section
-                  id="my-records"
+                  id="access-history"
                   className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
                 >
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -1484,7 +1484,10 @@ export default function Home() {
                   </div>
                 </section>
 
-                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <section
+                  id="my-records"
+                  className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
+                >
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                       <p className="text-sm font-semibold text-slate-500">
