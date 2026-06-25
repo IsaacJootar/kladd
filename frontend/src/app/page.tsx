@@ -190,6 +190,7 @@ const navItems = [
   { label: "My Records", targetID: "my-records", requiresAuth: true },
   { label: "Requests", targetID: "proof-requests", requiresAuth: true },
   { label: "Proofs", targetID: "active-proofs", requiresAuth: true },
+  { label: "Access History", targetID: "access-history", requiresAuth: true },
   { label: "Security", targetID: "security", requiresAuth: true },
 ];
 
